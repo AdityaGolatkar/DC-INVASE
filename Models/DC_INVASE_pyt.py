@@ -265,12 +265,22 @@ def get_IoU(pred, targs, device):
 
     #pred = pred.numpy()
     max_pred = pred.max()
-    pred[pred>0.8*max_pred] = 1
-    pred[pred<0.8*max_pred] = 0
+    pred[pred>0.5*max_pred] = 1
+    pred[pred<0.5*max_pred] = 0
 
-    targs = (targs>0).to(device)#.float()
-    pred = (pred>0)#.float()
+    targs = torch.Tensor(targs).to(device)
+    
+    #targs = torch.Tensor((targs>0)).to(device)#.float()
+    #pred = (pred>0)#.float()
     return (pred*targs).sum() / ((pred+targs).sum() - (pred*targs).sum())
+
+def get_auc_roc(pred, targs):
+    
+    bz,c = pred.shape
+    out = np.zeros(targs.shape)
+    for i in range(bz):
+        out[i] = pred[i][int(targs[i])]
+    return roc_auc_score(targs,out)
 
 def make_prob(a,device):
     b = a.shape[0]
@@ -295,9 +305,9 @@ class dc_invase():
         #Initialization
         self.data_dir = '../Data/CBIS-DDSM_classification_orient/'
         self.train_csv = '../CSV/gain_train.csv'
-        self.num_epochs = 100
-        self.input_shape = (224,224)#(640,384) (640,512)
-        self.batch_size = 2
+        self.num_epochs = 200
+        self.input_shape = (320,256) #(640,512)#(224,224)#(640,384) (640,512)
+        self.batch_size = 32
         self.img_mean = [0.223, 0.231, 0.243]
         self.img_std = [0.266, 0.270, 0.274]
         self.alpha = 0.1
@@ -365,7 +375,7 @@ class dc_invase():
 
                     inputs = sampled_batch['image']
                     labels = sampled_batch['category']
-                    mask = denorm_img(sampled_batch['mask'],self.img_mean,img_std)
+                    mask = denorm_img(sampled_batch['mask'],self.img_mean,self.img_std)
 
                     #Input needs to be float and labels long
                     inputs = inputs.float().to(self.device)
@@ -440,19 +450,19 @@ class dc_invase():
                     running_pred_loss += pred_ce_loss.item() * inputs.size(0)
                     running_dis_loss += dis_ce_loss.item() * inputs.size(0)
                     
-                    running_pred_auc += auc(pred_prob,labels.data)
+                    running_pred_auc += get_auc_roc(pred_prob.detach().cpu().numpy(),labels.data)
                     running_iou += get_IoU(sel_prob,mask,self.device)
 
                     pbar.update(inputs.shape[0])
                 pbar.close()
 
 
-                epoch_sel_loss = running_sel_loss / dataset_sizes[phase]
-                epoch_pred_loss = running_pred_loss / dataset_sizes[phase]
-                epoch_dis_loss = running_dis_loss / dataset_sizes[phase]
+                epoch_sel_loss = running_sel_loss / self.dataset_sizes[phase]
+                epoch_pred_loss = running_pred_loss / self.dataset_sizes[phase]
+                epoch_dis_loss = running_dis_loss / self.dataset_sizes[phase]
                 
-                epoch_pred_auc = running_pred_auc.double() / dataset_sizes[phase]
-                epoch_IoU = running_IoU.double() / dataset_sizes[phase]
+                epoch_pred_auc = 1.0*running_pred_auc / self.dataset_sizes[phase]
+                epoch_IoU = 1.0*running_iou / self.dataset_sizes[phase]
 
                 print('{} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} AUC: {:.4f} IoU: {:.4f}'.format(
                     phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_pred_auc, epoch_IoU))
@@ -504,4 +514,5 @@ class dc_invase():
                 mIoU += iou
 
         print("mIoU:", 1.0*mIoU/total)
+
 
