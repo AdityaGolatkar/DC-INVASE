@@ -265,12 +265,22 @@ def get_IoU(pred, targs, device):
 
     #pred = pred.numpy()
     max_pred = pred.max()
-    pred[pred>0.8*max_pred] = 1
-    pred[pred<0.8*max_pred] = 0
+    pred[pred>0.5*max_pred] = 1
+    pred[pred<0.5*max_pred] = 0
 
-    targs = (targs>0).to(device)#.float()
-    pred = (pred>0)#.float()
+    targs = torch.Tensor(targs).to(device)
+    
+    #targs = torch.Tensor((targs>0)).to(device)#.float()
+    #pred = (pred>0)#.float()
     return (pred*targs).sum() / ((pred+targs).sum() - (pred*targs).sum())
+
+def get_auc_roc(pred, targs):
+    
+    bz,c = pred.shape
+    out = np.zeros(targs.shape)
+    for i in range(bz):
+        out[i] = pred[i][int(targs[i])]
+    return roc_auc_score(targs,out)
 
 def make_prob(a,device):
     b = a.shape[0]
@@ -365,7 +375,7 @@ class dc_invase():
 
                     inputs = sampled_batch['image']
                     labels = sampled_batch['category']
-                    mask = denorm_img(sampled_batch['mask'],self.img_mean,img_std)
+                    mask = denorm_img(sampled_batch['mask'],self.img_mean,self.img_std)
 
                     #Input needs to be float and labels long
                     inputs = inputs.float().to(self.device)
@@ -440,7 +450,7 @@ class dc_invase():
                     running_pred_loss += pred_ce_loss.item() * inputs.size(0)
                     running_dis_loss += dis_ce_loss.item() * inputs.size(0)
                     
-                    running_pred_auc += auc(pred_prob,labels.data)
+                    running_pred_auc += get_auc_roc(pred_prob.detach().cpu().numpy(),labels.data)
                     running_iou += get_IoU(sel_prob,mask,self.device)
 
                     pbar.update(inputs.shape[0])
