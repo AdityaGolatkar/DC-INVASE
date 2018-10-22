@@ -72,7 +72,8 @@ def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batc
             transforms.Resize(image_size),#row to column ratio should be 1.69
             #transforms.RandomHorizontalFlip(0.5),
             transforms.RandomVerticalFlip(0.5),
-            transforms.RandomRotation(30),
+            transforms.RandomRotation(15),
+            transforms.RandomAffine(translate=(0,0.2),degrees=15,shear=15),
             transforms.ToTensor(),
             #transforms.Normalize([0.223, 0.231, 0.243], [0.266, 0.270, 0.274])
             transforms.Normalize(img_mean,img_std)
@@ -99,9 +100,9 @@ def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batc
         image_datasets[x] = dataset(train_csv_path.replace('train',x),root_dir=data_dir,transform=data_transforms[x])
 
         if x!= 'test':
-            dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=batch_size,shuffle=True, num_workers=4)
+            dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=batch_size,shuffle=True, num_workers=8)
         else:
-            dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=batch_size,shuffle=False, num_workers=4)
+            dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=batch_size,shuffle=False, num_workers=8)
         dataset_sizes[x] = len(image_datasets[x])
 
     device = torch.device("cuda:0")
@@ -148,7 +149,7 @@ def build_selector():
 
     class unet(nn.Module):
 
-        def __init__(self, feature_scale=4, n_classes=1, is_deconv=True, in_channels=3, is_batchnorm=True):
+        def __init__(self, feature_scale=2, n_classes=1, is_deconv=True, in_channels=3, is_batchnorm=True):
             super(unet, self).__init__()
             self.is_deconv = is_deconv
             self.in_channels = in_channels
@@ -308,14 +309,14 @@ class dc_invase():
         #Initialization
         self.data_dir = '../Data/CBIS-DDSM_classification_orient/'
         self.train_csv = '../CSV/gain_train.csv'
-        self.num_epochs = 100
+        self.num_epochs = 50
         self.input_shape = (320,256)#(512,392)#(640,512) #(640,512)#(224,224)#(640,384) (640,512)
         self.batch_size = 32
         self.img_mean = [0.223, 0.231, 0.243]
         self.img_std = [0.266, 0.270, 0.274]
         self.alpha = 1
-        self.beta = 0.1
-        self.exp_name = 'dc_invase_resnet'
+        self.beta = 0.5
+        self.exp_name = 'dc_invase_resnet_segnet'
         
         #Define the three models
         self.selector = build_selector()
@@ -332,9 +333,9 @@ class dc_invase():
                                                         self.input_shape,self.img_mean,self.img_std,self.batch_size)
         
         #Define the three optimizers one for each model
-        self.optimizer_sel = optim.Adam(self.selector.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
-        self.optimizer_pred = optim.Adam(self.predictor.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
-        self.optimizer_dis = optim.Adam(self.discriminator.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+        self.optimizer_sel = optim.Adam(self.selector.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+        self.optimizer_pred = optim.Adam(self.predictor.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+        self.optimizer_dis = optim.Adam(self.discriminator.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
         
         
     def train(self):
@@ -515,12 +516,12 @@ class dc_invase():
         mode = 'test'
 
         with torch.no_grad():
-            for data in dataloaders[mode]:
+            for data in self.dataloaders[mode]:
 
                 images = data['image']
                 mask = data['mask']
 
-                images = images.to(device)
+                images = images.to(self.device)
                 
                 sel_prob = make_prob(self.selector(images))
                 iou = get_IoU(sel_prob,mask)
@@ -531,7 +532,7 @@ class dc_invase():
         print("mIoU:", 1.0*mIoU/total)
 
     def return_model(self):
-        self.selector.load_state_dict(self.exp_name+'_sel.pt')
+        self.selector.load_state_dict(torch.load(self.exp_name+'_sel.pt'))
         self.selector.eval()
-        return self.selector
+        return self.selector,self.dataloaders['test']
 
