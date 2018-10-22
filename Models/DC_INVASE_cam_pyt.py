@@ -165,8 +165,8 @@ def get_IoU(pred, targs, device):
     
     #targs = torch.Tensor((targs>0)).to(device)#.float()
     #pred = (pred>0)#.float()
-    #return (pred*targs).sum() / ((pred+targs).sum() - (pred*targs).sum())
-    return (pred*targs).sum()/targs.sum()
+    return (pred*targs).sum() / ((pred+targs).sum() - (pred*targs).sum())
+    #return (pred*targs).sum()/targs.sum()
 
 def get_auc_roc(pred, targs):
     
