@@ -148,7 +148,7 @@ def build_selector():
 
     class unet(nn.Module):
 
-        def __init__(self, feature_scale=2, n_classes=1, is_deconv=True, in_channels=3, is_batchnorm=True):
+        def __init__(self, feature_scale=4, n_classes=1, is_deconv=True, in_channels=3, is_batchnorm=True):
             super(unet, self).__init__()
             self.is_deconv = is_deconv
             self.in_channels = in_channels
@@ -265,14 +265,17 @@ def get_IoU(pred, targs, device):
 
     #pred = pred.numpy()
     max_pred = pred.max()
-    pred[pred>0.5*max_pred] = 1
-    pred[pred<0.5*max_pred] = 0
+    mean_pred = pred.mean()
+    
+    pred[pred>mean_pred] = 1
+    pred[pred<mean_pred] = 0
 
     targs = torch.Tensor(targs).to(device)
     
     #targs = torch.Tensor((targs>0)).to(device)#.float()
     #pred = (pred>0)#.float()
-    return (pred*targs).sum() / ((pred+targs).sum() - (pred*targs).sum())
+    #return (pred*targs).sum() / ((pred+targs).sum() - (pred*targs).sum())
+    return (pred*targs).sum()/targs.sum()
 
 def get_auc_roc(pred, targs):
     
@@ -305,12 +308,12 @@ class dc_invase():
         #Initialization
         self.data_dir = '../Data/CBIS-DDSM_classification_orient/'
         self.train_csv = '../CSV/gain_train.csv'
-        self.num_epochs = 200
-        self.input_shape = (320,256) #(640,512)#(224,224)#(640,384) (640,512)
+        self.num_epochs = 100
+        self.input_shape = (320,256)#(512,392)#(640,512) #(640,512)#(224,224)#(640,384) (640,512)
         self.batch_size = 32
         self.img_mean = [0.223, 0.231, 0.243]
         self.img_std = [0.266, 0.270, 0.274]
-        self.alpha = 0.1
+        self.alpha = 1
         self.beta = 0.1
         self.exp_name = 'dc_invase_resnet'
         
@@ -337,7 +340,7 @@ class dc_invase():
     def train(self):
         
         since = time.time()
-        best_sel_loss = 0.0
+        best_epoch_pred_acc = 0.0
 
         for epoch in range(self.num_epochs):
             print('Epoch {}/{}'.format(epoch, self.num_epochs - 1),flush=True)
@@ -366,6 +369,8 @@ class dc_invase():
                 #Metrics : predictor auc and selector iou
                 running_pred_auc = 0
                 running_iou = 0
+                running_pred_acc = 0
+                running_dis_acc = 0
 
                 #tqdm bar
                 pbar = tqdm(total=self.dataset_sizes[phase])
@@ -407,21 +412,25 @@ class dc_invase():
                         #Generate predictor output probabilities
                         pred_out = self.predictor(x_s)
                         pred_prob = F.softmax(pred_out)
+                        _, pred_preds = torch.max(pred_out, 1)
+
                         
-                        #Generate discriminator probabilities
+                        #Generate discriminator probabilities)
                         dis_out = self.discriminator(x_s_bar)
                         dis_prob = F.softmax(dis_out)
+                        _, dis_preds = torch.max(dis_out, 1)
+
                         
                         #Predictor Cross entropy
                         pred_ce_loss = F.cross_entropy(pred_out,labels)
                         
                         #Discriminator Negative Cross entropy
-                        dis_ce_loss = F.cross_entropy(dis_out,labels)
+                        dis_ce_loss = F.cross_entropy(dis_out,1-labels)
                         
                         #Selector function loss
                         l2_norm = torch.norm(sel_prob.view((sel_prob.shape[0],-1)),2,-1)/torch.prod(torch.Tensor(self.input_shape).to(self.device))
                         norm_loss = torch.mean(l2_norm)
-                        sel_loss = pred_ce_loss - self.alpha*dis_ce_loss + self.beta*norm_loss
+                        sel_loss = pred_ce_loss + self.alpha*dis_ce_loss + self.beta*norm_loss
                         
                         # backward + optimize only if in training phase
                         if phase == 'train':
@@ -450,8 +459,11 @@ class dc_invase():
                     running_pred_loss += pred_ce_loss.item() * inputs.size(0)
                     running_dis_loss += dis_ce_loss.item() * inputs.size(0)
                     
-                    running_pred_auc += get_auc_roc(pred_prob.detach().cpu().numpy(),labels.data)
+                    #running_pred_auc += get_auc_roc(pred_prob.detach().cpu().numpy(),labels.data)
                     running_iou += get_IoU(sel_prob,mask,self.device)
+                    running_pred_acc += torch.sum(pred_preds == labels.data)
+                    running_dis_acc += torch.sum(dis_preds == (1-labels.data))
+                    #print(running_pred_acc,running_dis_acc,running_iou)
 
                     pbar.update(inputs.shape[0])
                 pbar.close()
@@ -461,18 +473,21 @@ class dc_invase():
                 epoch_pred_loss = running_pred_loss / self.dataset_sizes[phase]
                 epoch_dis_loss = running_dis_loss / self.dataset_sizes[phase]
                 
-                epoch_pred_auc = 1.0*running_pred_auc / self.dataset_sizes[phase]
-                epoch_IoU = 1.0*running_iou / self.dataset_sizes[phase]
+                #epoch_pred_auc = 1.0*running_pred_auc / self.dataset_sizes[phase]
+                epoch_IoU = running_iou.double() / self.dataset_sizes[phase]
+                epoch_pred_acc = running_pred_acc.double() / self.dataset_sizes[phase]
+                epoch_dis_acc = running_dis_acc.double() / self.dataset_sizes[phase]
 
-                print('{} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} AUC: {:.4f} IoU: {:.4f}'.format(
-                    phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_pred_auc, epoch_IoU))
+                print('{} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} PAC: {:.4f} DAC: {:.4f} IoU: {:.4f}'.format(
+                    phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_pred_acc, epoch_dis_acc,  epoch_IoU))
 
                 # deep copy the model
-                if phase == 'valid' and best_sel_loss > epoch_sel_loss:
-                    best_sel_loss = epoch_sel_loss
+                if phase == 'valid' and epoch_pred_acc > best_epoch_pred_acc:
+                    best_epoch_pred_acc = epoch_pred_acc
                     torch.save(self.selector.state_dict(),self.exp_name+'_sel.pt')
                     torch.save(self.predictor.state_dict(),self.exp_name+'_pred.pt')
                     torch.save(self.discriminator.state_dict(),self.exp_name+'_dis.pt')
+                    #import pdb;pdb.set_trace()
 
 
         time_elapsed = time.time() - since
@@ -515,4 +530,8 @@ class dc_invase():
 
         print("mIoU:", 1.0*mIoU/total)
 
+    def return_model(self):
+        self.selector.load_state_dict(self.exp_name+'_sel.pt')
+        self.selector.eval()
+        return self.selector
 
