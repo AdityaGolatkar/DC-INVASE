@@ -232,8 +232,8 @@ class dc_invase():
         self.batch_size = 1
         self.img_mean = [0.223, 0.231, 0.243]
         self.img_std = [0.266, 0.270, 0.274]
-        self.alpha = 2
-        self.beta = 0.1
+        self.alpha = 1.2
+        self.beta = 0.5
         self.exp_name = 'dc_invase_irv2_cam'
         
         #Define the three models
@@ -259,7 +259,7 @@ class dc_invase():
     def train(self):
         
         since = time.time()
-        best_sel_loss = 0.0
+        best_epoch_sel_acc = 0.0
 
         for epoch in range(self.num_epochs):
             print('Epoch {}/{}'.format(epoch, self.num_epochs - 1),flush=True)
@@ -380,14 +380,14 @@ class dc_invase():
                         kl_1 = pred_ce_loss - sel_ce_loss
                         
                         #LK_2
-                        kl_2 = dis_ce_loss - sel_ce_loss
+                        kl_2 = dis_ce_loss + sel_ce_loss
                         
                         #L2 norm loss
                         l2_norm = torch.norm(sel_prob.view((sel_prob.shape[0],-1)),2,-1)/torch.prod(torch.Tensor(self.input_shape).to(self.device))
                         norm_loss = torch.mean(l2_norm)
                         
                         #Total selector loss
-                        sel_loss = kl_1 - self.alpha*kl_2 + self.beta*norm_loss
+                        sel_loss = kl_1 + self.alpha*kl_2 + self.beta*norm_loss
                         
                         # backward + optimize only if in training phase
                         if phase == 'train':
@@ -434,15 +434,20 @@ class dc_invase():
                 
                 #epoch_pred_auc = 1.0*running_pred_auc / self.dataset_sizes[phase]
                 epoch_IoU = running_iou.double() / self.dataset_sizes[phase]
+                epoch_sel_acc = running_sel_acc.double() / self.dataset_sizes[phase]
                 epoch_pred_acc = running_pred_acc.double() / self.dataset_sizes[phase]
                 epoch_dis_acc = running_dis_acc.double() / self.dataset_sizes[phase]
 
-                print('{} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} ACC: {:.4f} AUC: {:.4f} IoU: {:.4f}'.format(
-                    phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_acc, epoch_pred_auc, epoch_IoU))
+                
+                print('{} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} SAC: {:.4f} PAC: {:.4f} DAC: {:.4f} IoU: {:.4f}'.format(
+                    phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_sel_acc, epoch_pred_acc, epoch_dis_acc,  epoch_IoU))
+
+                #print('{} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} ACC: {:.4f} AUC: {:.4f} IoU: {:.4f}'.format(
+                #    phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_acc, epoch_pred_auc, epoch_IoU))
 
                 # deep copy the model
-                if phase == 'valid' and best_sel_loss > epoch_sel_loss:
-                    best_sel_loss = epoch_sel_loss
+                if phase == 'valid' and epoch_sel_acc > best_epoch_sel_acc:
+                    best_epoch_sel_acc = epoch_sel_acc
                     torch.save(self.selector.state_dict(),self.exp_name+'_sel.pt')
                     torch.save(self.predictor.state_dict(),self.exp_name+'_pred.pt')
                     torch.save(self.discriminator.state_dict(),self.exp_name+'_dis.pt')
