@@ -1,4 +1,15 @@
-from __future__ import print_function, division
+
+  
+#Pytorch
+import torch
+import torch.nn.functional as F
+import torch.nn as nn
+import torch.optim as optim
+from torch.optim import lr_scheduler
+
+#Torchvision
+import torchvision
+from torchvision import datasets, models, transforms, utils
   
 #Pytorch
 import torch
@@ -72,6 +83,7 @@ def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batc
         'train': transforms.Compose([
             transforms.Resize(image_size),#row to column ratio should be 1.69
             #transforms.RandomHorizontalFlip(0.5),
+            #transforms.CenterCrop((image_size[1],image_size[1])),
             transforms.RandomVerticalFlip(0.5),
             transforms.RandomRotation(15),
             transforms.RandomAffine(translate=(0,0.2),degrees=15,shear=15),
@@ -81,12 +93,14 @@ def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batc
         ]),
         'valid': transforms.Compose([
             transforms.Resize(image_size),
+            #transforms.CenterCrop((image_size[1],image_size[1])),
             transforms.ToTensor(),
             #transforms.Normalize([0.223, 0.231, 0.243], [0.266, 0.270, 0.274])
             transforms.Normalize(img_mean,img_std)
         ]),
         'test': transforms.Compose([
             transforms.Resize(image_size),
+            #transforms.CenterCrop((image_size[1],image_size[1])),
             transforms.ToTensor(),
             #transforms.Normalize([0.223, 0.231, 0.243], [0.266, 0.270, 0.274])
             transforms.Normalize(img_mean,img_std)
@@ -99,7 +113,7 @@ def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batc
 
     for x in ['train', 'valid', 'test']:
         image_datasets[x] = dataset(train_csv_path.replace('train',x),root_dir=data_dir,transform=data_transforms[x])
-        dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=batch_size,shuffle=True, num_workers=8)    
+        dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=batch_size,shuffle=True, num_workers=4)    
         dataset_sizes[x] = len(image_datasets[x])
 
     device = torch.device("cuda:0")
@@ -113,19 +127,21 @@ def build_spd():
             super().__init__()
             self.base = base
             self.gap = nn.AdaptiveAvgPool2d((1,1))
-            self.fc = nn.Linear(1088,2)
+            self.fc = nn.Linear(256,2)
 
 
         def forward(self, x):
-            x = self.base(x)
-            x = self.gap(x)
+            x_base = self.base(x)
+            x = self.gap(x_base)
             x = x.view(x.size(0), -1)
             x = self.fc(x)
-            return x
+            return x,x_base
 
-    ir2 = pretrainedmodels.__dict__['inceptionresnetv2'](num_classes=1000, pretrained='imagenet')
-    ir1 = nn.Sequential(*list(ir2.children())[:-6])
-    model = selector(ir1)
+    r18 = models.resnet18(pretrained=True)
+    r = nn.Sequential(*list(r18.children())[:-3])
+    #ir2 = pretrainedmodels.__dict__['inceptionresnetv2'](num_classes=1000, pretrained='imagenet')
+    #ir1 = nn.Sequential(*list(ir2.children())[:-6])
+    model = selector(r)
         
     return model
 
@@ -148,8 +164,8 @@ def denorm_img(img_ten,img_mean,img_std):
         img[2,:,:] = img[2,:,:] + img_mean[2]
         
         img = img.mean(axis=0)
-        img[img>=0.2*img.max()] = 1
-        img[img<0.2*img.max()] = 0
+        img[img>=0.5*img.max()] = 1
+        img[img<0.5*img.max()] = 0
         
         output.append(img)
     
@@ -158,15 +174,15 @@ def denorm_img(img_ten,img_mean,img_std):
     
 def get_IoU(pred, targs, device):
 
-    pred[pred>0.5] = 1
-    pred[pred<0.5] = 0
+    pred[pred>pred.mean()+2*pred.std()] = 1
+    pred[pred<pred.mean()+2*pred.std()] = 0
 
     targs = torch.Tensor(targs).to(device)
     
     #targs = torch.Tensor((targs>0)).to(device)#.float()
     #pred = (pred>0)#.float()
-    return (pred*targs).sum() / ((pred+targs).sum() - (pred*targs).sum())
-    #return (pred*targs).sum()/targs.sum()
+    #return (pred*targs).sum() / ((pred+targs).sum() - (pred*targs).sum())
+    return (pred*targs).sum()/targs.sum(),pred.sum()/(pred.shape[-1]*pred.shape[2])
 
 def get_auc_roc(pred, targs):
     
@@ -192,15 +208,7 @@ def make_prob(a,device):
     t2[:,0,0,0] = ma[0]
     
     return d1/t2
-
-class SaveFeatures:
-    def __init__(self, m):
-        self.handle = m.register_forward_hook(self.hook_fn)
-    def hook_fn(self, m, inp, outp):
-        self.features = outp
-    def remove(self):
-        self.handle.remove()
-        
+      
 def returnCAM(feature_conv, weight_softmax, class_idx, output_shape,device):
     
     size_upsample = output_shape
@@ -227,14 +235,15 @@ class dc_invase():
         #Initialization
         self.data_dir = '../Data/CBIS-DDSM_classification_orient/'
         self.train_csv = '../CSV/gain_train.csv'
-        self.num_epochs = 200
-        self.input_shape = (640,512) #(640,512)#(224,224)#(640,384) (640,512)
+        self.num_epochs = 100
+        self.input_shape = (376,224) #(432,256) #(640,512) #(640,512)#(224,224)#(640,384) (640,512)
         self.batch_size = 1
         self.img_mean = [0.223, 0.231, 0.243]
         self.img_std = [0.266, 0.270, 0.274]
-        self.alpha = 1.2
-        self.beta = 0.5
-        self.exp_name = 'dc_invase_irv2_cam'
+
+        self.alpha = 1.0
+        self.beta = 1.0
+        self.exp_name = 'dc_invase_res_cam'
         
         #Define the three models
         self.selector = build_spd()
@@ -255,6 +264,9 @@ class dc_invase():
         self.optimizer_pred = optim.Adam(self.predictor.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
         self.optimizer_dis = optim.Adam(self.discriminator.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
         
+        #self.optimizer_sel = optim.SGD(self.selector.parameters(),lr = 0.01, momentum=0.9)#lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+        #self.optimizer_pred = optim.SGD(self.predictor.parameters(),lr = 0.01, momentum=0.9)#lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+        #self.optimizer_dis = optim.SGD(self.discriminator.parameters(),lr = 0.01, momentum=0.9)#lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
         
     def train(self):
         
@@ -288,6 +300,7 @@ class dc_invase():
                 #Metrics : predictor auc and selector iou
                 #running_pred_auc = 0
                 running_iou = 0
+                running_spa = 0
                 running_sel_acc = 0
                 running_pred_acc = 0
                 running_dis_acc = 0
@@ -301,6 +314,8 @@ class dc_invase():
                     inputs = sampled_batch['image']
                     labels = sampled_batch['category']
                     mask = denorm_img(sampled_batch['mask'],self.img_mean,self.img_std)
+                    #mask = sampled_batch['mask']
+
 
                     #Input needs to be float and labels long
                     inputs = inputs.float().to(self.device)
@@ -316,15 +331,10 @@ class dc_invase():
                     with torch.set_grad_enabled(phase == 'train'):
                         
                         #import pdb;pdb.set_trace()
-                        
-                        #Save feature during the forward pass
-                        sfs = SaveFeatures(self.selector.base[-1][-1].relu)
-                        
+                            
                         #Selector cnn predictions for the image
-                        sel_out = self.selector(inputs)
-                        
-                        sfs.remove()
-                        
+                        sel_out,feat = self.selector(inputs)
+                                                
                         #convert sel_out to probabilities
                         sel_pred_prob = F.softmax(sel_out)
                         #Find the predictions
@@ -337,15 +347,15 @@ class dc_invase():
                         weight_softmax = torch.squeeze(params[-2].data)
                     
                         #Get the CAM which will the prob map
-                        cam = torch.matmul(weight_softmax[sel_preds[0]],sfs.features[0].view(sfs.features[0].shape[0],-1))
-                        cam = F.relu(cam.reshape(sfs.features[0].shape[1], sfs.features[0].shape[2]))
-                        cam_img = torch.Tensor(cv2.resize(cam.data.cpu().numpy(),(self.input_shape[1],self.input_shape[0]))).to(self.device)
-                        #cam_img = transforms.Resize(self.input_shape)(cam)
-                        
+                        cam = torch.matmul(weight_softmax[sel_preds[0]],feat[0].view(feat[0].shape[0],-1))
+                        cam = F.relu(cam.reshape(feat[0].shape[1], feat[0].shape[2]))
+                        cam_img = F.interpolate(cam.unsqueeze(dim=0).unsqueeze(dim=0),(self.input_shape[0],self.input_shape[1]),mode='bilinear')
+                        #cam_img = torch.Tensor(cv2.resize(cam.data.cpu().numpy(),(self.input_shape[1],self.input_shape[0]))).to(self.device)
+                         
                         sel_prob = F.sigmoid(cam_img)
                         
-                        #sel_prob = F.Relu(returnCAM(features,weight_softmax,[sel_preds],(inputs.size(-1),inputs.size(-2))))
-                                                
+                        #sel_prob = cam_img/cam_img.max()
+                                                                        
                         #Compute the Complementary selection probability
                         comp_sel_prob = 1 - sel_prob
                         
@@ -356,13 +366,13 @@ class dc_invase():
                         x_s_bar = inputs*comp_sel_prob
                         
                         #Generate predictor output probabilities
-                        pred_out = self.predictor(x_s)
+                        pred_out,_ = self.predictor(x_s)
                         pred_prob = F.softmax(pred_out)
                         _, pred_preds = torch.max(pred_out, 1)
 
                         
                         #Generate discriminator probabilities
-                        dis_out = self.discriminator(x_s_bar)
+                        dis_out,_ = self.discriminator(x_s_bar)
                         dis_prob = F.softmax(dis_out)
                         _, dis_preds = torch.max(dis_out, 1)
 
@@ -387,7 +397,7 @@ class dc_invase():
                         norm_loss = torch.mean(l2_norm)
                         
                         #Total selector loss
-                        sel_loss = kl_1 + self.alpha*kl_2 + self.beta*norm_loss
+                        sel_loss = kl_1 + self.alpha*kl_2 + self.beta*norm_loss + sel_ce_loss
                         
                         # backward + optimize only if in training phase
                         if phase == 'train':
@@ -418,7 +428,9 @@ class dc_invase():
 
                     
                     #running_pred_auc += get_auc_roc(pred_prob.detach().cpu().numpy(),labels.data)
-                    running_iou += get_IoU(sel_prob,mask,self.device)
+                    iou,spa = get_IoU(sel_prob,mask,self.device)
+                    running_iou += iou
+                    running_spa += spa
                     running_sel_acc += torch.sum(sel_preds == labels.data)
                     running_pred_acc += torch.sum(pred_preds == labels.data)
                     running_dis_acc += torch.sum(dis_preds == (1-labels.data))
@@ -433,14 +445,15 @@ class dc_invase():
                 epoch_dis_loss = running_dis_loss / self.dataset_sizes[phase]
                 
                 #epoch_pred_auc = 1.0*running_pred_auc / self.dataset_sizes[phase]
+                epoch_spa = running_spa.double()/ self.dataset_sizes[phase]
                 epoch_IoU = running_iou.double() / self.dataset_sizes[phase]
                 epoch_sel_acc = running_sel_acc.double() / self.dataset_sizes[phase]
                 epoch_pred_acc = running_pred_acc.double() / self.dataset_sizes[phase]
                 epoch_dis_acc = running_dis_acc.double() / self.dataset_sizes[phase]
 
                 
-                print('{} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} SAC: {:.4f} PAC: {:.4f} DAC: {:.4f} IoU: {:.4f}'.format(
-                    phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_sel_acc, epoch_pred_acc, epoch_dis_acc,  epoch_IoU))
+                print('{} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} SAC: {:.4f} PAC: {:.4f} DAC: {:.4f} Spa: {:.4f} IoU: {:.4f}'.format(
+                    phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_sel_acc, epoch_pred_acc, epoch_dis_acc, epoch_spa,  epoch_IoU))
 
                 #print('{} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} ACC: {:.4f} AUC: {:.4f} IoU: {:.4f}'.format(
                 #    phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_acc, epoch_pred_auc, epoch_IoU))
@@ -448,6 +461,7 @@ class dc_invase():
                 # deep copy the model
                 if phase == 'valid' and epoch_sel_acc > best_epoch_sel_acc:
                     best_epoch_sel_acc = epoch_sel_acc
+                    #print(self.exp_name)
                     torch.save(self.selector.state_dict(),self.exp_name+'_sel.pt')
                     torch.save(self.predictor.state_dict(),self.exp_name+'_pred.pt')
                     torch.save(self.discriminator.state_dict(),self.exp_name+'_dis.pt')

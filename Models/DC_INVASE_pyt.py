@@ -1,4 +1,13 @@
-from __future__ import print_function, division
+#Pytorch
+import torch
+import torch.nn.functional as F
+import torch.nn as nn
+import torch.optim as optim
+from torch.optim import lr_scheduler
+
+#Torchvision
+import torchvision
+from torchvision import datasets, models, transforms, utils
   
 #Pytorch
 import torch
@@ -33,6 +42,7 @@ import tqdm
 from tqdm import tqdm
 import warnings
 warnings.filterwarnings("ignore")
+
 
 
 class dataset(Dataset):
@@ -71,6 +81,7 @@ def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batc
         'train': transforms.Compose([
             transforms.Resize(image_size),#row to column ratio should be 1.69
             #transforms.RandomHorizontalFlip(0.5),
+            #transforms.CenterCrop((image_size[1],image_size[1])),
             transforms.RandomVerticalFlip(0.5),
             transforms.RandomRotation(15),
             transforms.RandomAffine(translate=(0,0.2),degrees=15,shear=15),
@@ -80,12 +91,14 @@ def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batc
         ]),
         'valid': transforms.Compose([
             transforms.Resize(image_size),
+            #transforms.CenterCrop((image_size[1],image_size[1])),
             transforms.ToTensor(),
             #transforms.Normalize([0.223, 0.231, 0.243], [0.266, 0.270, 0.274])
             transforms.Normalize(img_mean,img_std)
         ]),
         'test': transforms.Compose([
             transforms.Resize(image_size),
+            #transforms.CenterCrop((image_size[1],image_size[1])),
             transforms.ToTensor(),
             #transforms.Normalize([0.223, 0.231, 0.243], [0.266, 0.270, 0.274])
             transforms.Normalize(img_mean,img_std)
@@ -98,11 +111,7 @@ def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batc
 
     for x in ['train', 'valid', 'test']:
         image_datasets[x] = dataset(train_csv_path.replace('train',x),root_dir=data_dir,transform=data_transforms[x])
-
-        if x!= 'test':
-            dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=batch_size,shuffle=True, num_workers=8)
-        else:
-            dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=batch_size,shuffle=False, num_workers=8)
+        dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=batch_size,shuffle=True, num_workers=8)    
         dataset_sizes[x] = len(image_datasets[x])
 
     device = torch.device("cuda:0")
@@ -149,7 +158,7 @@ def build_selector():
 
     class unet(nn.Module):
 
-        def __init__(self, feature_scale=2, n_classes=1, is_deconv=True, in_channels=3, is_batchnorm=True):
+        def __init__(self, feature_scale=4, n_classes=1, is_deconv=True, in_channels=3, is_batchnorm=True):
             super(unet, self).__init__()
             self.is_deconv = is_deconv
             self.in_channels = in_channels
@@ -159,7 +168,7 @@ def build_selector():
             filters = [32, 64, 128, 256, 512]
             filters = [int(x / self.feature_scale) for x in filters]
 
-            # downsampling
+            #downsampling
             self.conv1 = unetConv2(self.in_channels, filters[0], self.is_batchnorm)
             self.maxpool1 = nn.MaxPool2d(kernel_size=2)
 
@@ -171,7 +180,7 @@ def build_selector():
 
             self.conv4 = unetConv2(filters[2], filters[3], self.is_batchnorm)
             self.maxpool4 = nn.MaxPool2d(kernel_size=2)
-
+                    
             self.center = unetConv2(filters[3], filters[4], self.is_batchnorm)
 
             # upsampling
@@ -213,23 +222,34 @@ def build_selector():
 
 def build_predictor_discriminator():
 
-    class r18(nn.Module):
+    class pd(nn.Module):
         def __init__(self,base_model):
             super().__init__()
             self.base = base_model
-            self.gap = nn.AdaptiveAvgPool2d((1,1))#nn.AvgPool2d((14,14),stride=1)
-            self.fc = nn.Linear(512,2)
+            self.gap = nn.AdaptiveAvgPool2d((1,1))
+            self.fc1 = nn.Linear(1536,256)
+            self.do = nn.Dropout(0.5)
+            self.fc2 = nn.Linear(256,2)
 
         def forward(self, x):
             x = self.base(x)
             x = self.gap(x)
             x = x.view(x.size(0), -1)
-            x = self.fc(x)
-            return x#F.softmax(x)
+            x = F.relu(self.fc1(x))
+            x = self.do(x)
+            x = self.fc2(x)
+            return x #F.softmax(x)
 
-    model_ft = models.resnet18(pretrained=True)
-    r1 = nn.Sequential(*list(model_ft.children())[:-2])
-    model = r18(r1)
+    ir2 = pretrainedmodels.__dict__['inceptionresnetv2'](num_classes=1000, pretrained='imagenet')
+    ir1 = nn.Sequential(*list(ir2.children())[:-2])
+    for i in ir1.parameters():
+        i.requires_grad = False
+    for j in ir1[-1].parameters():
+        j.requires_grad = True
+
+    #model_ft = models.resnet18(pretrained=True)
+    #r1 = nn.Sequential(*list(model_ft.children())[:-2])
+    model = pd(ir1)
     
     #summary(model.cuda(),(3,320,192))
     
@@ -266,57 +286,58 @@ def get_IoU(pred, targs, device):
 
     #pred = pred.numpy()
     max_pred = pred.max()
-    mean_pred = pred.mean()
+    #mean_pred = pred.mean()
     
-    pred[pred>mean_pred] = 1
-    pred[pred<mean_pred] = 0
+    pred[pred>pred.mean() + pred.std()] = 1
+    pred[pred<pred.mean() + pred.std()] = 0
 
     targs = torch.Tensor(targs).to(device)
     
     #targs = torch.Tensor((targs>0)).to(device)#.float()
     #pred = (pred>0)#.float()
     #return (pred*targs).sum() / ((pred+targs).sum() - (pred*targs).sum())
+    
     return (pred*targs).sum()/targs.sum()
 
-def get_auc_roc(pred, targs):
+# def get_auc_roc(pred, targs):
     
-    bz,c = pred.shape
-    out = np.zeros(targs.shape)
-    for i in range(bz):
-        out[i] = pred[i][int(targs[i])]
-    return roc_auc_score(targs,out)
+#     bz,c = pred.shape
+#     out = np.zeros(targs.shape)
+#     for i in range(bz):
+#         out[i] = pred[i][int(targs[i])]
+#     return roc_auc_score(targs,out)
 
-def make_prob(a,device):
-    b = a.shape[0]
+# def make_prob(a,device):
+#     b = a.shape[0]
     
-    f1 = a.view(b,-1)
-    mi = torch.min(f1,-1)
+#     f1 = a.view(b,-1)
+#     mi = torch.min(f1,-1)
     
-    t1 = torch.ones((b,1,1,1)).to(device)
-    t1[:,0,0,0] = mi[0]
+#     t1 = torch.ones((b,1,1,1)).to(device)
+#     t1[:,0,0,0] = mi[0]
     
-    d1 = a - t1
+#     d1 = a - t1
     
-    ma = torch.max(d1.view(b,-1),-1)
-    t2 = torch.ones((b,1,1,1)).to(device)
-    t2[:,0,0,0] = ma[0]
+#     ma = torch.max(d1.view(b,-1),-1)
+#     t2 = torch.ones((b,1,1,1)).to(device)
+#     t2[:,0,0,0] = ma[0]
     
-    return d1/t2
+#     return d1/t2
 
 class dc_invase():
-    def __init__(self, alpha=1, beta=0.1):
+    def __init__(self):
         
         #Initialization
         self.data_dir = '../Data/CBIS-DDSM_classification_orient/'
         self.train_csv = '../CSV/gain_train.csv'
-        self.num_epochs = 50
-        self.input_shape = (320,256)#(512,392)#(640,512) #(640,512)#(224,224)#(640,384) (640,512)
-        self.batch_size = 32
+        self.num_epochs = 100
+        self.input_shape = (512,384)#(320,256)#(640,512) #(640,512)#(224,224)#(640,384) (640,512)
+        self.batch_size = 1
         self.img_mean = [0.223, 0.231, 0.243]
         self.img_std = [0.266, 0.270, 0.274]
         self.alpha = 1
-        self.beta = 0.5
-        self.exp_name = 'dc_invase_resnet_segnet'
+        self.beta = 0.01
+        self.exp_name = 'dc_invase_ir2_unet'
         
         #Define the three models
         self.selector = build_selector()
@@ -336,6 +357,13 @@ class dc_invase():
         self.optimizer_sel = optim.Adam(self.selector.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
         self.optimizer_pred = optim.Adam(self.predictor.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
         self.optimizer_dis = optim.Adam(self.discriminator.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+        
+#         self.lr_sched_sel = lr_scheduler.StepLR(self.optimizer_sel, step_size=10, gamma=0.1)
+#         self.lr_sched_pred = lr_scheduler.StepLR(self.optimizer_pred, step_size=10, gamma=0.1)
+#         self.lr_sched_dis = lr_scheduler.StepLR(self.optimizer_dis, step_size=10, gamma=0.1)
+
+        self.l1_loss = nn.L1Loss()
+        
         
         
     def train(self):
@@ -366,6 +394,8 @@ class dc_invase():
                 running_sel_loss = 0.0
                 running_pred_loss = 0.0
                 running_dis_loss = 0.0
+                running_spa = 0.0
+
                 
                 #Metrics : predictor auc and selector iou
                 running_pred_auc = 0
@@ -399,8 +429,9 @@ class dc_invase():
                         #import pdb;pdb.set_trace()
                         
                         #Generate selection probabilites using selector function. This will be the mask
-                        sel_prob = make_prob(self.selector(inputs),self.device)
-                        
+                        sel_prob = self.selector(inputs)
+                        sel_prob = (sel_prob - sel_prob.min())/(sel_prob.max()-sel_prob.min())
+                       
                         #Compute the Complementary selection probability
                         comp_sel_prob = 1 - sel_prob
                         
@@ -429,9 +460,12 @@ class dc_invase():
                         dis_ce_loss = F.cross_entropy(dis_out,1-labels)
                         
                         #Selector function loss
-                        l2_norm = torch.norm(sel_prob.view((sel_prob.shape[0],-1)),2,-1)/torch.prod(torch.Tensor(self.input_shape).to(self.device))
-                        norm_loss = torch.mean(l2_norm)
-                        sel_loss = pred_ce_loss + self.alpha*dis_ce_loss + self.beta*norm_loss
+                        #l2_norm = torch.norm(sel_prob.view((sel_prob.shape[0],-1)),2,-1)/torch.prod(torch.Tensor(self.input_shape).to(self.device))
+                        #norm_loss = torch.mean(l2_norm)
+                        
+                        l1_loss = self.l1_loss(sel_prob,torch.zeros(sel_prob.shape,requires_grad=False).to(self.device))
+                        
+                        sel_loss = pred_ce_loss + self.alpha*dis_ce_loss + self.beta*l1_loss
                         
                         # backward + optimize only if in training phase
                         if phase == 'train':
@@ -459,6 +493,7 @@ class dc_invase():
                     running_sel_loss += sel_loss.item() * inputs.size(0)
                     running_pred_loss += pred_ce_loss.item() * inputs.size(0)
                     running_dis_loss += dis_ce_loss.item() * inputs.size(0)
+                    running_spa += l1_loss.item() *inputs.size(0)
                     
                     #running_pred_auc += get_auc_roc(pred_prob.detach().cpu().numpy(),labels.data)
                     running_iou += get_IoU(sel_prob,mask,self.device)
@@ -473,14 +508,15 @@ class dc_invase():
                 epoch_sel_loss = running_sel_loss / self.dataset_sizes[phase]
                 epoch_pred_loss = running_pred_loss / self.dataset_sizes[phase]
                 epoch_dis_loss = running_dis_loss / self.dataset_sizes[phase]
+                epoch_spa = running_spa / self.dataset_sizes[phase]
                 
                 #epoch_pred_auc = 1.0*running_pred_auc / self.dataset_sizes[phase]
                 epoch_IoU = running_iou.double() / self.dataset_sizes[phase]
                 epoch_pred_acc = running_pred_acc.double() / self.dataset_sizes[phase]
                 epoch_dis_acc = running_dis_acc.double() / self.dataset_sizes[phase]
 
-                print('{} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} PAC: {:.4f} DAC: {:.4f} IoU: {:.4f}'.format(
-                    phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_pred_acc, epoch_dis_acc,  epoch_IoU))
+                print('{} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} Spa: {:.4f} PAC: {:.4f} DAC: {:.4f} IoU: {:.4f}'.format(
+                    phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_spa, epoch_pred_acc, epoch_dis_acc,  epoch_IoU))
 
                 # deep copy the model
                 if phase == 'valid' and epoch_pred_acc > best_epoch_pred_acc:
@@ -508,7 +544,7 @@ class dc_invase():
         
     def test_model(self):
                 
-        self.selector.load_state_dict(self.exp_name+'_sel.pt')
+        self.selector.load_state_dict(torch.load(self.exp_name+'_sel.pt'))
         self.selector.eval()
         
         mIoU = 0
@@ -530,9 +566,35 @@ class dc_invase():
                 mIoU += iou
 
         print("mIoU:", 1.0*mIoU/total)
+        
+    def test_model_acc(self):
+                
+        self.predictor.load_state_dict(torch.load(self.exp_name+'_pred.pt'))
+        self.predictor.eval()
+        
+        acc = 0
+        total = 0
+        mode = 'test'
+
+        with torch.no_grad():
+            for data in self.dataloaders[mode]:
+
+                images = data['image']
+                labels = data['category']
+                
+                images = images.to(self.device)
+                labels = labels.to(self.device)
+                
+                output = self.predictor(images)
+                _,out = torch.max(output,1)
+                
+                total += labels.size(0)
+                acc += torch.sum(out==labels.data)
+
+        print("mIoU:", 1.0*acc.double()/total)
+        
 
     def return_model(self):
         self.selector.load_state_dict(torch.load(self.exp_name+'_sel.pt'))
         self.selector.eval()
         return self.selector,self.dataloaders['test']
-
