@@ -131,33 +131,25 @@ def build_model():
     class mdl(nn.Module):
         def __init__(self,base_model):
             super().__init__()
-            self.base = base_model
+            self.base = base_model 
             self.gap = nn.AdaptiveAvgPool2d((1,1))
-            self.fc1 = nn.Linear(2048,2)
+            self.fc1 = nn.Linear(512,2)
 
         def forward(self, x):
             x = self.base(x)
             x = self.gap(x)
             x = x.view(x.size(0), -1)
             x = self.fc1(x)
-            return x #F.softmax(x)
+            return x 
 
-    r = models.resnet101(pretrained=True)
-    r1 = nn.Sequential(*list(r.children())[:-2])
-    model = mdl(r1)
+    v = models.vgg16_bn(pretrained=True)
+    v1 = nn.Sequential(*list(v.children())[:-1])
+
+    #r = models.resnet101(pretrained=True)
+    #r1 = nn.Sequential(*list(r.children())[:-2])
+    model = mdl(v1[-1][:-1])
     
     return model
-
-#summary(r1.cuda(),(3,512,384))
-    #ir2 = pretrainedmodels.__dict__['inceptionresnetv2'](num_classes=1000, pretrained='imagenet')
-    #ir1 = nn.Sequential(*list(ir2.children())[:-2])
-#     for i in ir1.parameters():
-#         i.requires_grad = False
-#     for j in ir1[-1].parameters():
-#         j.requires_grad = True
-
-    #model_ft = models.resnet18(pretrained=True)
-    #r1 = nn.Sequential(*list(model_ft.children())[:-2])
 
 def denorm_img(img_ten,img_mean,img_std):
 
@@ -210,13 +202,13 @@ class grad_cam():
         #Initialization
         self.data_dir = '../Data/CBIS-DDSM_classification_orient/'
         self.train_csv = '../CSV/gain_train.csv'
-        self.num_epochs = 200
+        self.num_epochs = 50
         self.input_shape = (320,256)#(640,512) #(640,512)#(224,224)#(640,384) (640,512)
-        self.batch_size = 32
+        self.batch_size = 16
         self.img_mean = [0.223, 0.231, 0.243]
         self.img_std = [0.266, 0.270, 0.274]
         
-        self.exp_name = 'grad_cam_resnet101'
+        self.exp_name = 'grad_cam_vgg_16'
         
         #Define the three models
         self.model = build_model()
@@ -228,11 +220,14 @@ class grad_cam():
         self.dataloaders,self.dataset_sizes,self.dataset,self.device = get_dataloader(self.data_dir,self.train_csv,\
                                                         self.input_shape,self.img_mean,self.img_std,self.batch_size)
         
+
+        self.optimizer = optim.Adam(self.model.parameters(),lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
         #Define the three optimizers one for each model
-        self.optimizer = optim.Adam([{'params':self.model.gap.parameters()},
-                                    {'params':self.model.fc1.parameters()},
-                                    {'params':self.model.base[:6].parameters(),'lr':0.0001},
-                                    {'params':self.model.base[6:].parameters(),'lr':0.001}], lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+        
+	#self.optimizer = optim.Adam([{'params':self.model.gap.parameters()},
+        #                            {'params':self.model.fc1.parameters()},
+        #                            {'params':self.model.base[:6].parameters(),'lr':0.0001},
+        #                            {'params':self.model.base[6:].parameters(),'lr':0.001}], lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
         
         self.loss_fn = nn.CrossEntropyLoss()
         
@@ -301,7 +296,7 @@ class grad_cam():
                     # statistics
                     running_loss += loss.item() * inputs.size(0)
                     running_acc += torch.sum(preds == labels.data)
-                    running_f1 += f1_score(labels.data,preds) * inputs.size(0)
+                    running_f1 += f1_score(labels.data,preds)
                     
 
                     pbar.update(inputs.shape[0])
@@ -309,7 +304,7 @@ class grad_cam():
 
                 epoch_loss = running_loss / self.dataset_sizes[phase]
                 epoch_acc = running_acc.double() / self.dataset_sizes[phase]
-                epoch_f1 = 1.0*running_f1 / self.dataset_sizes[phase]
+                epoch_f1 = running_f1.double() / self.dataset_sizes[phase]
 
                 print('{} Sel_Loss: {:.4f} Acc: {:.4f} F1: {:.4f}'.format(
                     phase, epoch_loss, epoch_acc,  epoch_f1))
