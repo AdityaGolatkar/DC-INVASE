@@ -296,7 +296,7 @@ class grad_cam():
                     # statistics
                     running_loss += loss.item() * inputs.size(0)
                     running_acc += torch.sum(preds == labels.data)
-                    running_f1 += f1_score(labels.data,preds)
+                    running_f1 += f1_score(labels.data,preds)*inputs.size(0)
                     
 
                     pbar.update(inputs.shape[0])
@@ -304,7 +304,7 @@ class grad_cam():
 
                 epoch_loss = running_loss / self.dataset_sizes[phase]
                 epoch_acc = running_acc.double() / self.dataset_sizes[phase]
-                epoch_f1 = running_f1.double() / self.dataset_sizes[phase]
+                epoch_f1 = 1.0*running_f1 / self.dataset_sizes[phase]
 
                 print('{} Sel_Loss: {:.4f} Acc: {:.4f} F1: {:.4f}'.format(
                     phase, epoch_loss, epoch_acc,  epoch_f1))
