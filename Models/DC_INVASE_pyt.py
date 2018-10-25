@@ -53,7 +53,8 @@ class dataset(Dataset):
         self.root_dir = root_dir
         self.transform = transform
         self.mask_dir = self.root_dir.replace('CBIS-DDSM_classification','masks')
-
+        self.bmask_dir = self.root_dir.replace('CBIS-DDSM_classification','breast_mask')
+        
     def __len__(self):
         return len(self.data_frame)
 
@@ -67,12 +68,19 @@ class dataset(Dataset):
         mask = io.imread(mask_name)
         mask = np.array([mask,mask,mask]).transpose((1,2,0))
         mask = Image.fromarray(mask)
+        
+        bmask_name = os.path.join(self.bmask_dir,self.data_frame.iloc[idx]['name'].replace('.j','_bmask.j'))
+        bmask = io.imread(bmask_name)
+        bmask = np.array([bmask,bmask,bmask]).transpose((1,2,0))
+        bmask = Image.fromarray(bmask)
+        
 
         if self.transform:
             image = self.transform(image)
             mask = self.transform(mask) 
-      
-        return {'image':image,'category':label,'mask':mask, 'name':img_name}
+            bmask = self.transform(bmask)
+    
+        return {'image':image,'category':label,'mask':mask, 'bmask':bmask, 'name':img_name}
     
 
 def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batch_size=1):
@@ -119,103 +127,177 @@ def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batc
     return dataloaders,dataset_sizes,image_datasets,device
 
 def build_selector():
-    class unetConv2(nn.Module):
-        def __init__(self, in_size, out_size, is_batchnorm):
-            super(unetConv2, self).__init__()
+#     class unetConv2(nn.Module):
+#         def __init__(self, in_size, out_size, is_batchnorm):
+#             super(unetConv2, self).__init__()
 
-            if is_batchnorm:
-                self.conv1 = nn.Sequential(nn.Conv2d(in_size, out_size, 3, 1, 1),
-                                           nn.BatchNorm2d(out_size),
-                                           nn.ReLU(),)
-                self.conv2 = nn.Sequential(nn.Conv2d(out_size, out_size, 3, 1, 1),
-                                           nn.BatchNorm2d(out_size),
-                                           nn.ReLU(),)
-            else:
-                self.conv1 = nn.Sequential(nn.Conv2d(in_size, out_size, 3, 1, 1),
-                                           nn.ReLU(),)
-                self.conv2 = nn.Sequential(nn.Conv2d(out_size, out_size, 3, 1, 1),
-                                           nn.ReLU(),)
-        def forward(self, inputs):
-            outputs = self.conv1(inputs)
-            outputs = self.conv2(outputs)
-            return outputs
+#             if is_batchnorm:
+#                 self.conv1 = nn.Sequential(nn.Conv2d(in_size, out_size, 3, 1, 1),
+#                                            nn.BatchNorm2d(out_size),
+#                                            nn.ReLU(),)
+#                 self.conv2 = nn.Sequential(nn.Conv2d(out_size, out_size, 3, 1, 1),
+#                                            nn.BatchNorm2d(out_size),
+#                                            nn.ReLU(),)
+#             else:
+#                 self.conv1 = nn.Sequential(nn.Conv2d(in_size, out_size, 3, 1, 1),
+#                                            nn.ReLU(),)
+#                 self.conv2 = nn.Sequential(nn.Conv2d(out_size, out_size, 3, 1, 1),
+#                                            nn.ReLU(),)
+#         def forward(self, inputs):
+#             outputs = self.conv1(inputs)
+#             outputs = self.conv2(outputs)
+#             return outputs
 
-    class unetUp(nn.Module):
-        def __init__(self, in_size, out_size, is_deconv):
-            super(unetUp, self).__init__()
-            self.conv = unetConv2(in_size, out_size, False)
-            if is_deconv:
-                self.up = nn.ConvTranspose2d(in_size, out_size, kernel_size=2, stride=2)
-            else:
-                self.up = nn.UpsamplingBilinear2d(scale_factor=2)
+#     class unetUp(nn.Module):
+#         def __init__(self, in_size, out_size, is_deconv):
+#             super(unetUp, self).__init__()
+#             self.conv = unetConv2(in_size, out_size, False)
+#             if is_deconv:
+#                 self.up = nn.ConvTranspose2d(in_size, out_size, kernel_size=2, stride=2)
+#             else:
+#                 self.up = nn.UpsamplingBilinear2d(scale_factor=2)
 
-        def forward(self, inputs1, inputs2):
-            outputs2 = self.up(inputs2)
-            offset = outputs2.size()[2] - inputs1.size()[2]
-            padding = 2 * [offset // 2, offset // 2]
-            outputs1 = F.pad(inputs1, padding)
-            return self.conv(torch.cat([outputs1, outputs2], 1))
+#         def forward(self, inputs1, inputs2):
+#             outputs2 = self.up(inputs2)
+#             offset = outputs2.size()[2] - inputs1.size()[2]
+#             padding = 2 * [offset // 2, offset // 2]
+#             outputs1 = F.pad(inputs1, padding)
+#             return self.conv(torch.cat([outputs1, outputs2], 1))
 
-    class unet(nn.Module):
+#     class unet(nn.Module):
 
-        def __init__(self, feature_scale=4, n_classes=1, is_deconv=True, in_channels=3, is_batchnorm=True):
-            super(unet, self).__init__()
+#         def __init__(self, feature_scale=4, n_classes=1, is_deconv=True, in_channels=3, is_batchnorm=True):
+#             super(unet, self).__init__()
+#             self.is_deconv = is_deconv
+#             self.in_channels = in_channels
+#             self.is_batchnorm = is_batchnorm
+#             self.feature_scale = feature_scale
+
+#             filters = [32, 64, 128, 256, 512]
+#             filters = [int(x / self.feature_scale) for x in filters]
+
+#             #downsampling
+#             self.conv1 = unetConv2(self.in_channels, filters[0], self.is_batchnorm)
+#             self.maxpool1 = nn.MaxPool2d(kernel_size=2)
+
+#             self.conv2 = unetConv2(filters[0], filters[1], self.is_batchnorm)
+#             self.maxpool2 = nn.MaxPool2d(kernel_size=2)
+
+#             self.conv3 = unetConv2(filters[1], filters[2], self.is_batchnorm)
+#             self.maxpool3 = nn.MaxPool2d(kernel_size=2)
+
+#             self.conv4 = unetConv2(filters[2], filters[3], self.is_batchnorm)
+#             self.maxpool4 = nn.MaxPool2d(kernel_size=2)
+                    
+#             self.center = unetConv2(filters[3], filters[4], self.is_batchnorm)
+
+#             # upsampling
+#             self.up_concat4 = unetUp(filters[4], filters[3], self.is_deconv)
+#             self.up_concat3 = unetUp(filters[3], filters[2], self.is_deconv)
+#             self.up_concat2 = unetUp(filters[2], filters[1], self.is_deconv)
+#             self.up_concat1 = unetUp(filters[1], filters[0], self.is_deconv)
+
+#             # final conv (without any concat)
+#             self.final = nn.Conv2d(filters[0], n_classes, 1)
+
+#         def forward(self, inputs):
+#             conv1 = self.conv1(inputs)
+#             maxpool1 = self.maxpool1(conv1)
+
+#             conv2 = self.conv2(maxpool1)
+#             maxpool2 = self.maxpool2(conv2)
+
+#             conv3 = self.conv3(maxpool2)
+#             maxpool3 = self.maxpool3(conv3)
+
+#             conv4 = self.conv4(maxpool3)
+#             maxpool4 = self.maxpool4(conv4)
+
+#             center = self.center(maxpool4)
+#             up4 = self.up_concat4(conv4, center)
+#             up3 = self.up_concat3(conv3, up4)
+#             up2 = self.up_concat2(conv2, up3)
+#             up1 = self.up_concat1(conv1, up2)
+
+#             final = self.final(up1)
+
+#             return final
+
+    def same_padding(i, o, k, s, d=0):
+    #     p = (k + (k-1)*(d-1) + (o - 1) * s - i) // 2 
+        p = (k - 1) // 2
+        return p
+
+    class depthwise_block(nn.Module):
+        def __init__(self, in_c, out_c, stride=1):
+            super().__init__()
+            self.bn1 = nn.BatchNorm2d(in_c)
+            self.conv1 = nn.Conv2d(in_c, in_c, kernel_size=3,stride=stride, padding=same_padding(in_c,in_c,3,stride)
+                ,groups=in_c, bias=False)
+            self.conv2 = nn.Conv2d(in_c, out_c, kernel_size=1,stride=1, bias=False)
+            self.bn2 = nn.BatchNorm2d(out_c)
+
+        def forward(self, inp):
+            out = F.relu(self.bn1(self.conv1(inp)))
+            out = F.relu(self.bn2(self.conv2(out)))
+            return out
+
+    #First channel wise deconv and then filtering
+    class depthwise_deconv_block(nn.Module):
+        def __init__(self, in_c, out_c, stride=1):
+            super().__init__()
+            self.bn1 = nn.BatchNorm2d(in_c)
+            self.conv1 = nn.ConvTranspose2d(in_c, in_c, kernel_size=2,stride=2, padding=0
+                ,groups=in_c, bias=False)
+            self.conv2 = nn.Conv2d(in_c, out_c, kernel_size=1,stride=1, bias=False)
+            self.bn2 = nn.BatchNorm2d(out_c)
+
+
+        def forward(self,input):
+            output = F.relu(self.bn1(self.conv1(input)))
+            output = F.relu(self.bn2(self.conv2(output)))
+            return output
+        
+    class mobile_segnet(nn.Module):
+
+        def __init__(self, feature_scale=2, n_out_channels=1, is_deconv=True, in_channels=3):
+            super().__init__()
             self.is_deconv = is_deconv
             self.in_channels = in_channels
-            self.is_batchnorm = is_batchnorm
             self.feature_scale = feature_scale
 
-            filters = [32, 64, 128, 256, 512]
+            filters = [64, 128, 256, 512, 1024]
             filters = [int(x / self.feature_scale) for x in filters]
 
-            #downsampling
-            self.conv1 = unetConv2(self.in_channels, filters[0], self.is_batchnorm)
-            self.maxpool1 = nn.MaxPool2d(kernel_size=2)
+            downward = []
+            for i in range(len(filters)):
+                if i == 0:
+                    downward.append(depthwise_block(self.in_channels, filters[i]))
+                else:
+                    downward.append(depthwise_block(filters[i-1], filters[i]))
 
-            self.conv2 = unetConv2(filters[0], filters[1], self.is_batchnorm)
-            self.maxpool2 = nn.MaxPool2d(kernel_size=2)
+                if i != (len(filters)-1):
+                    downward.append(nn.MaxPool2d(kernel_size=2))
+            self.downward = nn.Sequential(*downward)
 
-            self.conv3 = unetConv2(filters[1], filters[2], self.is_batchnorm)
-            self.maxpool3 = nn.MaxPool2d(kernel_size=2)
+            upward = []
+            for i in range((len(filters))-1):
+                upward.append(depthwise_deconv_block(filters[len(filters)-1-i], filters[len(filters)-2-i]))
+            self.upward = nn.Sequential(*upward)
 
-            self.conv4 = unetConv2(filters[2], filters[3], self.is_batchnorm)
-            self.maxpool4 = nn.MaxPool2d(kernel_size=2)
-                    
-            self.center = unetConv2(filters[3], filters[4], self.is_batchnorm)
-
-            # upsampling
-            self.up_concat4 = unetUp(filters[4], filters[3], self.is_deconv)
-            self.up_concat3 = unetUp(filters[3], filters[2], self.is_deconv)
-            self.up_concat2 = unetUp(filters[2], filters[1], self.is_deconv)
-            self.up_concat1 = unetUp(filters[1], filters[0], self.is_deconv)
-
-            # final conv (without any concat)
-            self.final = nn.Conv2d(filters[0], n_classes, 1)
+            self.final = nn.Conv2d(filters[0], n_out_channels, 1)
 
         def forward(self, inputs):
-            conv1 = self.conv1(inputs)
-            maxpool1 = self.maxpool1(conv1)
 
-            conv2 = self.conv2(maxpool1)
-            maxpool2 = self.maxpool2(conv2)
+            x = self.downward(inputs)
+            x = self.upward(x)
+            x = self.final(x)
 
-            conv3 = self.conv3(maxpool2)
-            maxpool3 = self.maxpool3(conv3)
+            return x
 
-            conv4 = self.conv4(maxpool3)
-            maxpool4 = self.maxpool4(conv4)
-
-            center = self.center(maxpool4)
-            up4 = self.up_concat4(conv4, center)
-            up3 = self.up_concat3(conv3, up4)
-            up2 = self.up_concat2(conv2, up3)
-            up1 = self.up_concat1(conv1, up2)
-
-            final = self.final(up1)
-
-            return final
+    model = mobile_segnet()
         
-    model = unet()
+    #model = unet()
     #summary(model.cuda(),(3,320,192))
 
     return model
@@ -335,9 +417,9 @@ class dc_invase():
         self.batch_size = 1
         self.img_mean = [0.223, 0.231, 0.243]
         self.img_std = [0.266, 0.270, 0.274]
-        self.alpha = 1
-        self.beta = 0.01
-        self.exp_name = 'dc_invase_ir2_unet'
+        self.alpha = 0.8
+        self.beta = 0.1
+        self.exp_name = 'dc_invase_ir2_mseg_bmask'
         
         #Define the three models
         self.selector = build_selector()
@@ -370,6 +452,7 @@ class dc_invase():
         
         since = time.time()
         best_epoch_pred_acc = 0.0
+        best_epoch_iou = 0.0
 
         for epoch in range(self.num_epochs):
             print('Epoch {}/{}'.format(epoch, self.num_epochs - 1),flush=True)
@@ -412,6 +495,7 @@ class dc_invase():
                     inputs = sampled_batch['image']
                     labels = sampled_batch['category']
                     mask = denorm_img(sampled_batch['mask'],self.img_mean,self.img_std)
+                    bmask = torch.Tensor(denorm_img(sampled_batch['bmask'],self.img_mean,self.img_std)).to(self.device)
 
                     #Input needs to be float and labels long
                     inputs = inputs.float().to(self.device)
@@ -429,8 +513,9 @@ class dc_invase():
                         #import pdb;pdb.set_trace()
                         
                         #Generate selection probabilites using selector function. This will be the mask
-                        sel_prob = self.selector(inputs)
-                        sel_prob = (sel_prob - sel_prob.min())/(sel_prob.max()-sel_prob.min())
+                        sel_prob = F.sigmoid(self.selector(inputs))
+                        sel_prob = sel_prob*bmask
+                        #sel_prob = (sel_prob - sel_prob.min())/(sel_prob.max()-sel_prob.min())
                        
                         #Compute the Complementary selection probability
                         comp_sel_prob = 1 - sel_prob
@@ -465,7 +550,7 @@ class dc_invase():
                         
                         l1_loss = self.l1_loss(sel_prob,torch.zeros(sel_prob.shape,requires_grad=False).to(self.device))
                         
-                        sel_loss = pred_ce_loss + self.alpha*dis_ce_loss + self.beta*l1_loss
+                        sel_loss = pred_ce_loss - self.alpha*F.cross_entropy(dis_out,labels) + self.beta*l1_loss
                         
                         # backward + optimize only if in training phase
                         if phase == 'train':
@@ -519,8 +604,8 @@ class dc_invase():
                     phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_spa, epoch_pred_acc, epoch_dis_acc,  epoch_IoU))
 
                 # deep copy the model
-                if phase == 'valid' and epoch_pred_acc > best_epoch_pred_acc:
-                    best_epoch_pred_acc = epoch_pred_acc
+                if phase == 'valid' and epoch_IoU > best_epoch_iou:
+                    best_epoch_iou = epoch_IoU
                     torch.save(self.selector.state_dict(),self.exp_name+'_sel.pt')
                     torch.save(self.predictor.state_dict(),self.exp_name+'_pred.pt')
                     torch.save(self.discriminator.state_dict(),self.exp_name+'_dis.pt')
