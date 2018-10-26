@@ -1,2 +1,7 @@
 *Data/
 *.pt
+*Weights/
+*Experiments/
+*npy
+
+
