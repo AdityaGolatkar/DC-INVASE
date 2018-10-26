@@ -39,7 +39,7 @@ import copy
 from model_summary import *
 import pretrainedmodels
 import tqdm
-from tqdm import tqdm
+from tqdm import tqdm_notebook as tqdm
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -80,7 +80,7 @@ class dataset(Dataset):
             mask = self.transform(mask) 
             bmask = self.transform(bmask)
     
-        return {'image':image,'category':label,'mask':mask, 'bmask':bmask, 'name':img_name}
+        return {'image':image,'category':label,'mask':mask, 'bmask':bmask, 'name':self.data_frame.iloc[idx]['name']}
     
 
 def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batch_size=1):
@@ -118,8 +118,14 @@ def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batc
     dataset_sizes = {}
 
     for x in ['train', 'valid', 'test']:
+        if x == 'test':
+            bs = 1
+            sh = False
+        else:
+            bs = batch_size
+            sh = True
         image_datasets[x] = dataset(train_csv_path.replace('train',x),root_dir=data_dir,transform=data_transforms[x])
-        dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=batch_size,shuffle=True, num_workers=8)    
+        dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=bs,shuffle=sh, num_workers=8)    
         dataset_sizes[x] = len(image_datasets[x])
 
     device = torch.device("cuda:0")
@@ -136,11 +142,11 @@ def build_model():
             self.fc1 = nn.Linear(512,2)
 
         def forward(self, x):
-            x = self.base(x)
-            x = self.gap(x)
+            x_base = self.base(x)
+            x = self.gap(x_base)
             x = x.view(x.size(0), -1)
             x = self.fc1(x)
-            return x 
+            return x,x_base 
 
     v = models.vgg16_bn(pretrained=True)
     v1 = nn.Sequential(*list(v.children())[:-1])
@@ -180,20 +186,13 @@ def denorm_img(img_ten,img_mean,img_std):
     
 def get_IoU(pred, targs, device):
 
-    #pred = pred.numpy()
-    max_pred = pred.max()
-    #mean_pred = pred.mean()
-    
-    pred[pred>pred.mean() + pred.std()] = 1
-    pred[pred<pred.mean() + pred.std()] = 0
-
     targs = torch.Tensor(targs).to(device)
     
     #targs = torch.Tensor((targs>0)).to(device)#.float()
     #pred = (pred>0)#.float()
-    #return (pred*targs).sum() / ((pred+targs).sum() - (pred*targs).sum())
+    return (pred*targs).sum() / ((pred+targs).sum() - (pred*targs).sum())
     
-    return (pred*targs).sum()/targs.sum()
+    #return (pred*targs).sum()/targs.sum()
 
 
 class grad_cam():
@@ -224,7 +223,7 @@ class grad_cam():
         self.optimizer = optim.Adam(self.model.parameters(),lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
         #Define the three optimizers one for each model
         
-	#self.optimizer = optim.Adam([{'params':self.model.gap.parameters()},
+	    #self.optimizer = optim.Adam([{'params':self.model.gap.parameters()},
         #                            {'params':self.model.fc1.parameters()},
         #                            {'params':self.model.base[:6].parameters(),'lr':0.0001},
         #                            {'params':self.model.base[6:].parameters(),'lr':0.001}], lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
@@ -283,7 +282,7 @@ class grad_cam():
                         
                         #import pdb;pdb.set_trace()
                         
-                        outputs = self.model(inputs)
+                        outputs,_ = self.model(inputs)
                         _, preds = torch.max(outputs, 1)
                         loss = self.loss_fn(outputs, labels)
 
@@ -353,34 +352,135 @@ class grad_cam():
 
         print("mIoU:", 1.0*mIoU/total)
         
-    def test_model_acc(self):
+    def test_model_auc(self):
                 
-        self.predictor.load_state_dict(torch.load(self.exp_name+'_pred.pt'))
-        self.predictor.eval()
+        self.model.load_state_dict(torch.load(self.exp_name+'_sel.pt'))
+        self.model.eval()
         
         acc = 0
         total = 0
         mode = 'test'
 
+        predictions = []
+        ground_truth = []
+        
         with torch.no_grad():
+            
+            pbar = tqdm(total=self.dataset_sizes[mode])
             for data in self.dataloaders[mode]:
 
-                images = data['image']
+                inputs = data['image']
                 labels = data['category']
                 
-                images = images.to(self.device)
+                inputs = inputs.to(self.device)
                 labels = labels.to(self.device)
                 
-                output = self.predictor(images)
+                output,_ = self.model(inputs)
                 _,out = torch.max(output,1)
+                
+                predictions.append(output.cpu().numpy())
+                ground_truth.append(labels.cpu().numpy())
+                #ground_truth.append(labels.cpu())
                 
                 total += labels.size(0)
                 acc += torch.sum(out==labels.data)
-
-        print("mIoU:", 1.0*acc.double()/total)
+                pbar.update(inputs.shape[0])
+            pbar.close()
+                
+        pred = predictions[0]
+        for i in range(len(predictions)-1):
+            pred = np.concatenate((pred,predictions[i+1]),axis=0)
+            
+        gt = ground_truth[0]
+        for i in range(len(ground_truth)-1):
+            gt = np.concatenate((gt,ground_truth[i+1]),axis=0)
+            
+        #import pdb;pdb.set_trace()
+        auc = roc_auc_score(gt,pred[:,1],average='weighted')
+        
+        print("AUC:", auc)
+        print("ACC:", acc.double()/total)
         
 
+    def get_cam(self):
+                
+        self.model.load_state_dict(torch.load(self.exp_name+'_sel.pt'))
+        self.model.eval()
+        
+        acc = 0
+        total = 0
+        mode = 'test'
+
+        cm = []
+        m = []
+        bm = []
+        
+        params = list(self.model.parameters())                        
+        weight_softmax = torch.squeeze(params[-2].data)
+        
+        iou = 0
+        
+        with torch.no_grad():
+            
+            pbar = tqdm(total=self.dataset_sizes[mode])
+            for data in self.dataloaders[mode]:
+
+                inputs = data['image']
+                labels = data['category']
+                mask = denorm_img(data['mask'],self.img_mean,self.img_std)
+                bmask = torch.Tensor(denorm_img(data['bmask'],self.img_mean,self.img_std)).to(self.device)
+                
+                inputs = inputs.to(self.device)
+                labels = labels.to(self.device)
+                
+                output,feat = self.model(inputs)
+                _,out = torch.max(output,1)      
+
+                #Get the CAM which will the prob map
+                cam = torch.matmul(weight_softmax[out[0]],feat[0].reshape(feat[0].shape[0],feat[0].shape[1]*feat[0].shape[2]))
+                cam = F.relu(cam.reshape(feat[0].shape[1], feat[0].shape[2]))
+                cam_img = F.interpolate(cam.unsqueeze(dim=0).unsqueeze(dim=0),(self.input_shape[0],self.input_shape[1]),mode='bilinear')             
+                cam_img = cam_img - cam_img.min()
+                cam_img = cam_img/cam_img.max()
+                
+                cam_bin = torch.zeros(cam_img.shape).to(self.device)
+                cam_bin[cam_img>0] = 1
+                #cam_bin[cam_img<0] = 0
+                
+                iou += get_IoU(cam_bin,mask,self.device)
+                #import pdb;pdb.set_trace()
+                #print(iou)
+                
+                m.append(mask.squeeze())
+                bm.append(bmask.squeeze())
+                cm.append(cam_img.cpu().numpy().squeeze())
+                                
+                base_path = '../Experiments/CAM/'
+                name = data['name'][0]
+                
+                im = name.replace('.j','_1.j')
+                #import pdb;pdb.set_trace()
+                inputs = inputs/inputs.max()
+                cv2.imwrite(base_path+im,inputs.cpu().numpy().squeeze().transpose((1,2,0))*255)
+                
+                ma = name.replace('.j','_2.j')
+                cv2.imwrite(base_path+ma,mask.squeeze()*255)
+
+                pr = name.replace('.j','_3.j')
+                cam_img = cam_img/cam_img.max()
+                cv2.imwrite(base_path+pr,cam_img.cpu().numpy().squeeze()*255)
+                
+                pbar.update(inputs.shape[0])
+                
+            pbar.close()
+
+        print('mIoU:',iou.double()/self.dataset_sizes[mode])
+
+        return m,bm,cm
+                
+        
     def return_model(self):
-        self.selector.load_state_dict(torch.load(self.exp_name+'_sel.pt'))
-        self.selector.eval()
-        return self.selector,self.dataloaders['valid']
+        self.model.load_state_dict(torch.load(self.exp_name+'_sel.pt'))
+        self.model.eval()
+        mode = 'test'
+        return self.model,self.dataloaders[mode]
