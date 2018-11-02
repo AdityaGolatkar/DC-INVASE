@@ -1,6 +1,8 @@
 #Pytorch
 import torch
 import torch.nn.functional as F
+import torch
+import torch.nn.functional as F
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim import lr_scheduler
@@ -43,7 +45,10 @@ from tqdm import tqdm as tqdm
 import warnings
 warnings.filterwarnings("ignore")
 
+import dataloaders
+from dataloaders import *
 
+## Dataloader
 
 class dataset(Dataset):
 
@@ -52,8 +57,6 @@ class dataset(Dataset):
         self.data_frame = pd.read_csv(csv_file)
         self.root_dir = root_dir
         self.transform = transform
-        self.mask_dir = self.root_dir.replace('CBIS-DDSM_classification','masks')
-        self.bmask_dir = self.root_dir.replace('CBIS-DDSM_classification','breast_mask')
         
     def __len__(self):
         return len(self.data_frame)
@@ -62,26 +65,12 @@ class dataset(Dataset):
         img_name = os.path.join(self.root_dir,self.data_frame.iloc[idx]['name'])
         image = Image.open(img_name)
 
-        label = self.data_frame.iloc[idx]['category']
-
-        mask_name = os.path.join(self.mask_dir,self.data_frame.iloc[idx]['name'].replace('.j','_mask.j'))
-        mask = io.imread(mask_name)
-        mask = np.array([mask,mask,mask]).transpose((1,2,0))
-        mask = Image.fromarray(mask)
-        
-        bmask_name = os.path.join(self.bmask_dir,self.data_frame.iloc[idx]['name'].replace('.j','_bmask.j'))
-        bmask = io.imread(bmask_name)
-        bmask = np.array([bmask,bmask,bmask]).transpose((1,2,0))
-        bmask = Image.fromarray(bmask)
-        
+        label = self.data_frame.iloc[idx]['category']       
 
         if self.transform:
             image = self.transform(image)
-            mask = self.transform(mask) 
-            bmask = self.transform(bmask)
     
-        return {'image':image,'category':label,'mask':mask, 'bmask':bmask, 'name':self.data_frame.iloc[idx]['name']}
-    
+        return {'image':image,'category':label,'name':self.data_frame.iloc[idx]['name']}
     
 
 def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batch_size=1):
@@ -89,27 +78,21 @@ def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batc
     data_transforms = {
         'train': transforms.Compose([
             transforms.Resize(image_size),#row to column ratio should be 1.69
-            #transforms.RandomHorizontalFlip(0.5),
-            #transforms.CenterCrop((image_size[1],image_size[1])),
+            transforms.RandomHorizontalFlip(0.5),
             transforms.RandomVerticalFlip(0.5),
             transforms.RandomRotation(15),
             transforms.RandomAffine(translate=(0,0.2),degrees=15,shear=15),
             transforms.ToTensor(),
-            #transforms.Normalize([0.223, 0.231, 0.243], [0.266, 0.270, 0.274])
             transforms.Normalize(img_mean,img_std)
         ]),
         'valid': transforms.Compose([
             transforms.Resize(image_size),
-            #transforms.CenterCrop((image_size[1],image_size[1])),
             transforms.ToTensor(),
-            #transforms.Normalize([0.223, 0.231, 0.243], [0.266, 0.270, 0.274])
             transforms.Normalize(img_mean,img_std)
         ]),
         'test': transforms.Compose([
             transforms.Resize(image_size),
-            #transforms.CenterCrop((image_size[1],image_size[1])),
             transforms.ToTensor(),
-            #transforms.Normalize([0.223, 0.231, 0.243], [0.266, 0.270, 0.274])
             transforms.Normalize(img_mean,img_std)
         ])
     }
@@ -126,12 +109,14 @@ def get_dataloader(data_dir, train_csv_path, image_size, img_mean, img_std, batc
             bs = batch_size
             sh = True
         image_datasets[x] = dataset(train_csv_path.replace('train',x),root_dir=data_dir,transform=data_transforms[x])
-        dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=bs,shuffle=sh, num_workers=4)    
+        dataloaders[x] = torch.utils.data.DataLoader(image_datasets[x], batch_size=bs,shuffle=sh, num_workers=8)    
         dataset_sizes[x] = len(image_datasets[x])
 
     device = torch.device("cuda:0")
 
     return dataloaders,dataset_sizes,image_datasets,device
+
+## Selector network (U-Net)
 
 def build_selector():
     class unetConv2(nn.Module):
@@ -233,86 +218,13 @@ def build_selector():
     model = unet()
     return model
 
-#     def same_padding(i, o, k, s, d=0):
-#     #     p = (k + (k-1)*(d-1) + (o - 1) * s - i) // 2 
-#         p = (k - 1) // 2
-#         return p
+# a = build_selector()
 
-#     class depthwise_block(nn.Module):
-#         def __init__(self, in_c, out_c, stride=1):
-#             super().__init__()
-#             self.bn1 = nn.BatchNorm2d(in_c)
-#             self.conv1 = nn.Conv2d(in_c, in_c, kernel_size=3,stride=stride, padding=same_padding(in_c,in_c,3,stride)
-#                 ,groups=in_c, bias=False)
-#             self.conv2 = nn.Conv2d(in_c, out_c, kernel_size=1,stride=1, bias=False)
-#             self.bn2 = nn.BatchNorm2d(out_c)
+# summary(a.cuda(),(3,224,224))
 
-#         def forward(self, inp):
-#             out = F.relu(self.bn1(self.conv1(inp)))
-#             out = F.relu(self.bn2(self.conv2(out)))
-#             return out
+## Predictor-Discriminator-Baseline
 
-#     #First channel wise deconv and then filtering
-#     class depthwise_deconv_block(nn.Module):
-#         def __init__(self, in_c, out_c, stride=1):
-#             super().__init__()
-#             self.bn1 = nn.BatchNorm2d(in_c)
-#             self.conv1 = nn.ConvTranspose2d(in_c, in_c, kernel_size=2,stride=2, padding=0
-#                 ,groups=in_c, bias=False)
-#             self.conv2 = nn.Conv2d(in_c, out_c, kernel_size=1,stride=1, bias=False)
-#             self.bn2 = nn.BatchNorm2d(out_c)
-
-
-#         def forward(self,input):
-#             output = F.relu(self.bn1(self.conv1(input)))
-#             output = F.relu(self.bn2(self.conv2(output)))
-#             return output
-        
-#     class mobile_segnet(nn.Module):
-
-#         def __init__(self, feature_scale=2, n_out_channels=1, is_deconv=True, in_channels=3):
-#             super().__init__()
-#             self.is_deconv = is_deconv
-#             self.in_channels = in_channels
-#             self.feature_scale = feature_scale
-
-#             filters = [64, 128, 256, 512, 1024]
-#             filters = [int(x / self.feature_scale) for x in filters]
-
-#             downward = []
-#             for i in range(len(filters)):
-#                 if i == 0:
-#                     downward.append(depthwise_block(self.in_channels, filters[i]))
-#                 else:
-#                     downward.append(depthwise_block(filters[i-1], filters[i]))
-
-#                 if i != (len(filters)-1):
-#                     downward.append(nn.MaxPool2d(kernel_size=2))
-#             self.downward = nn.Sequential(*downward)
-
-#             upward = []
-#             for i in range((len(filters))-1):
-#                 upward.append(depthwise_deconv_block(filters[len(filters)-1-i], filters[len(filters)-2-i]))
-#             self.upward = nn.Sequential(*upward)
-
-#             self.final = nn.Conv2d(filters[0], n_out_channels, 1)
-
-#         def forward(self, inputs):
-
-#             x = self.downward(inputs)
-#             x = self.upward(x)
-#             x = self.final(x)
-
-#             return x
-
-#     model = mobile_segnet()
-        
-#     #model = unet()
-#     #summary(model.cuda(),(3,320,192))
-
-#     return model
-
-def build_predictor_discriminator():
+def build_pdb():
 
     class mdl(nn.Module):
         def __init__(self,base_model):
@@ -333,75 +245,77 @@ def build_predictor_discriminator():
 
     #r = models.resnet101(pretrained=True)
     #r1 = nn.Sequential(*list(r.children())[:-2])
+    
     model = mdl(v1[-1][:-1])
-    model.load_state_dict(torch.load('grad_cam_vgg_16_sel.pt'))
-    model.eval()
+    model.load_state_dict(torch.load('Weights/grad_cam_vgg_16_dogcat.pt'))
         
     return model
     
 
-def denorm_img(img_ten,img_mean,img_std):
+## Sampler
 
-    bz,nc,h,w = img_ten.shape
-    output = []
-    img_num = img_ten.numpy()
-    
-    for i in range(bz):
+def sampler(gen_prob):
+
+    # Sampling
+    samples = np.random.binomial(1, gen_prob, gen_prob.shape)
+
+    return samples
+
+def test_samples(gen_prob):
+    out = torch.zeros(gen_prob.shape)
+    out[gen_prob>0.5] = 1
+    return out
+
+## Mask generation
+
+class get_prob_mask(torch.nn.Module):
+    def __init__(self,img_size,patch_size):
+        super(get_prob_mask, self).__init__()
+        self.i_h = img_size[0]
+        self.i_w = img_size[1]
+        self.p_h = patch_size[0]
+        self.p_w = patch_size[1]
         
-        img = img_ten[i].numpy().squeeze()
-        
-        img[0,:,:] = img[0,:,:]*img_std[0]
-        img[1,:,:] = img[1,:,:]*img_std[1]
-        img[2,:,:] = img[2,:,:]*img_std[2]
-
-        img[0,:,:] = img[0,:,:] + img_mean[0]
-        img[1,:,:] = img[1,:,:] + img_mean[1]
-        img[2,:,:] = img[2,:,:] + img_mean[2]
-        
-        img = img.mean(axis=0)
-        img[img>=0.2*img.max()] = 1
-        img[img<0.2*img.max()] = 0
-        
-        output.append(img)
+    def forward(self,x):
+        b,c,h,w = x.size()
+        mask = torch.zeros((b,c,self.i_h,self.i_w))
+        for i in range(h):
+            for j in range(w):
+                mask[0][0][i*self.p_h:(i+1)*self.p_h,j*self.p_w:(j+1)*self.p_w] = x[0][0][i,j]
+                #import pdb;pdb.set_trace()
+        return mask
     
-    output = np.array(output)
-    return output
 
-def get_IoU(pred, targs, device):
-
-    targs = torch.Tensor(targs).to(device)
-    
-    #targs = torch.Tensor((targs>0)).to(device)#.float()
-    #pred = (pred>0)#.float()
-    return (pred*targs).sum() / ((pred+targs).sum() - (pred*targs).sum())
-    
-    #return (pred*targs).sum()/targs.sum()
-
+## DC-INVASE class
 
 class dc_invase():
     def __init__(self):
         
         #Initialization
-        self.data_dir = '../Data/CBIS-DDSM_classification_orient/'
-        self.train_csv = '../CSV/gain_train.csv'
+        self.data_dir = '../Data/DogCat/train/'
+        self.train_csv = '../CSV/dogcat_train_1.csv'
         self.num_epochs = 30
-        self.input_shape = (320,256)#(640,512) #(640,512)#(224,224)#(640,384) (640,512)
+        self.input_shape = (224,224)
+        self.patch_shape = (16,16)
         self.batch_size = 1
-        self.img_mean = [0.223, 0.231, 0.243]
-        self.img_std = [0.266, 0.270, 0.274]
-        self.alpha = 1
-        self.beta = 0.5
-        self.exp_name = 'dc_invase_vgg'
+        self.img_mean = [0,0,0]#[0.485, 0.456, 0.406]
+        self.img_std = [1,1,1]#[0.229, 0.224, 0.225]
+        self.alpha = 0.5
+        self.beta = 0.001
+        self.exp_name = 'Weights/dci_dc_pdb_wo_sig_pixel'
         
         #Define the three models
         self.selector = build_selector()
-        self.predictor = build_predictor_discriminator()
-        self.discriminator = build_predictor_discriminator()
+        self.predictor = build_pdb()
+        self.discriminator = build_pdb()
+        self.baseline = build_pdb()
+        
         
         #Put them on the GPU
         self.selector = self.selector.cuda()
         self.predictor = self.predictor.cuda()
         self.discriminator = self.discriminator.cuda()
+        self.baseline = self.baseline.cuda()
         
         #Get the dataloaders
         self.dataloaders,self.dataset_sizes,self.dataset,self.device = get_dataloader(self.data_dir,self.train_csv,\
@@ -411,20 +325,19 @@ class dc_invase():
         self.optimizer_sel = optim.Adam(self.selector.parameters(), lr=0.00001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
         self.optimizer_pred = optim.Adam(self.predictor.parameters(), lr=0.00001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
         self.optimizer_dis = optim.Adam(self.discriminator.parameters(), lr=0.00001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
-        
-#         self.lr_sched_sel = lr_scheduler.StepLR(self.optimizer_sel, step_size=10, gamma=0.1)
-#         self.lr_sched_pred = lr_scheduler.StepLR(self.optimizer_pred, step_size=10, gamma=0.1)
-#         self.lr_sched_dis = lr_scheduler.StepLR(self.optimizer_dis, step_size=10, gamma=0.1)
+        self.optimizer_base = optim.Adam(self.baseline.parameters(), lr=0.00001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
 
+        #Loss to ensure sparsity
         self.l1_loss = nn.L1Loss()
+        
+        self.prob_mask = get_prob_mask(self.input_shape,self.patch_shape)
         
         
         
     def train(self):
         
         since = time.time()
-        best_epoch_pred_acc = 0.0
-        best_epoch_iou = 0.0
+        best_sel_loss = 0
 
         for epoch in range(self.num_epochs):
             print('Epoch {}/{}'.format(epoch, self.num_epochs - 1),flush=True)
@@ -438,25 +351,27 @@ class dc_invase():
                     self.predictor.train() 
                     self.discriminator.train()
                     self.selector.train()
+                    self.baseline.train()
                 
                 else:
                     #Set the models to evaluation mode
                     self.predictor.eval()
                     self.discriminator.eval()
                     self.selector.eval()
+                    self.baseline.eval()
                     
                 #Keep a track of all the three loss
                 running_sel_loss = 0.0
                 running_pred_loss = 0.0
                 running_dis_loss = 0.0
+                running_base_loss = 0.0
                 running_spa = 0.0
 
                 
-                #Metrics : predictor auc and selector iou
-                running_pred_auc = 0
-                running_iou = 0
+                #Metrics : accuracy
                 running_pred_acc = 0
                 running_dis_acc = 0
+                running_base_acc = 0
 
                 #tqdm bar
                 pbar = tqdm(total=self.dataset_sizes[phase])
@@ -466,8 +381,6 @@ class dc_invase():
 
                     inputs = sampled_batch['image']
                     labels = sampled_batch['category']
-                    mask = denorm_img(sampled_batch['mask'],self.img_mean,self.img_std)
-                    bmask = torch.Tensor(denorm_img(sampled_batch['bmask'],self.img_mean,self.img_std)).to(self.device).unsqueeze(1)
                     
                     #Input needs to be float and labels long
                     inputs = inputs.float().to(self.device)
@@ -477,109 +390,149 @@ class dc_invase():
                     self.optimizer_sel.zero_grad()
                     self.optimizer_pred.zero_grad()
                     self.optimizer_dis.zero_grad()
+                    self.optimizer_base.zero_grad()
 
                     # forward
                     # track history if only in train
                     with torch.set_grad_enabled(phase == 'train'):
                         
                         #import pdb;pdb.set_trace()
-                        
+                    
                         #Generate selection probabilites using selector function. This will be the mask
-                        sel_prob_1 = F.sigmoid(self.selector(inputs))
+                        #sel_prob = F.sigmoid(self.selector(inputs))
+                        sel_prob = self.selector(inputs)
+                        sel_prob = sel_prob - sel_prob.min()
+                        sel_prob = sel_prob/sel_prob.max()
                         
-                        sel_prob = sel_prob_1*bmask
-                        #sel_prob = (sel_prob - sel_prob.min())/(sel_prob.max()-sel_prob.min())
-                       
+                        #Get the binary sampled mask
+                        bin_mask = torch.Tensor(sampler(sel_prob.data.cpu().numpy())).to(self.device)
+                    
                         #Compute the Complementary selection probability
-                        comp_sel_prob = 1 - sel_prob
+                        comp_bin_mask = 1 - bin_mask
                         
                         #Generate X_S the selection probability masked image
-                        x_s = inputs*sel_prob
+                        x_s = inputs*bin_mask
                         
                         #Generate X_S_bar the complementary selection probability masked image
-                        x_s_bar = inputs*comp_sel_prob
+                        x_s_bar = inputs*comp_bin_mask
+                        
+                        #Generate predictor output probabilities
+                        base_out,_ = self.baseline(inputs)
+                        base_prob = F.softmax(base_out)
+                        _, base_preds = torch.max(base_out, 1)
                         
                         #Generate predictor output probabilities
                         pred_out,_ = self.predictor(x_s)
                         pred_prob = F.softmax(pred_out)
                         _, pred_preds = torch.max(pred_out, 1)
-
                         
                         #Generate discriminator probabilities)
                         dis_out,_ = self.discriminator(x_s_bar)
                         dis_prob = F.softmax(dis_out)
                         _, dis_preds = torch.max(dis_out, 1)
-
+                        
+                        #Baseline Cross entropy
+                        base_ce_loss = F.cross_entropy(base_out,labels)
                         
                         #Predictor Cross entropy
                         pred_ce_loss = F.cross_entropy(pred_out,labels)
                         
                         #Discriminator Negative Cross entropy
-                        dis_ce_loss = F.cross_entropy(dis_out,1-labels)
+                        #dis_ce_loss = F.cross_entropy(dis_out,1-labels)
+                        
+                        #import pdb;pdb.set_trace()
+                        dis_ce_loss = -torch.log(dis_prob[0][int(labels[0])] + 1e-8)
+                        
+                        #first KL divergence term
+                        kl_1 = -base_ce_loss + pred_ce_loss
+                        
+                        #second KL divergence term
+                        kl_2 = -base_ce_loss + dis_ce_loss
+                        
+                        #the difference in the two KL divergence terms
+                        kl_diff = kl_1 - self.alpha*kl_2
+                        kl_diff.detach()
                         
                         #Selector function loss
-                        #l2_norm = torch.norm(sel_prob.view((sel_prob.shape[0],-1)),2,-1)/torch.prod(torch.Tensor(self.input_shape).to(self.device))
-                        #norm_loss = torch.mean(l2_norm)
+                        #l1_loss = self.l1_loss(sel_prob,torch.zeros(sel_prob.shape).to(self.device))
+                        l1_loss = torch.mean(sel_prob)
+                        #print(l1_loss)
+                        #l1_loss.detach()
+                        #import pdb;pdb.set_trace() 
+                        #kl_1.requires_grad = False
+                        #kl_2.requires_grad = False
+                        #kl_diff.requires_grad = False
                         
-                        l1_loss = self.l1_loss(sel_prob_1,torch.zeros(sel_prob.shape,requires_grad=False).to(self.device))
+                        distribution_loss = torch.mean(bin_mask*torch.log(sel_prob + 1e-8) + (1-bin_mask)*torch.log(1 - sel_prob + 1e-8))
                         
-                        sel_loss = pred_ce_loss - self.alpha*F.cross_entropy(dis_out,labels) + self.beta*l1_loss
+                        #import pdb;pdb.set_trace()
+                        sel_loss = distribution_loss*(kl_diff) + self.beta*l1_loss
                         
                         # backward + optimize only if in training phase
                         if phase == 'train':
+                            
+                            #The gradients of pred_ce_loss should not update the params of disc or sel
+                            base_ce_loss.backward(retain_graph=True)
+                            self.optimizer_sel.zero_grad()
+                            self.optimizer_dis.zero_grad()
+                            self.optimizer_pred.zero_grad()
+                            self.optimizer_base.step()
                             
                             #Update predictor using pred_ce_loss
                             #The gradients of pred_ce_loss should not update the params of disc or sel
                             pred_ce_loss.backward(retain_graph=True)
                             self.optimizer_sel.zero_grad()
                             self.optimizer_dis.zero_grad()
+                            self.optimizer_base.zero_grad()
                             self.optimizer_pred.step()
                             
                             #The gradients of dis_ce_loss should not update the params of pred or sel
                             dis_ce_loss.backward(retain_graph=True)
                             self.optimizer_sel.zero_grad()
                             self.optimizer_pred.zero_grad()
+                            self.optimizer_base.zero_grad()
                             self.optimizer_dis.step()
                             
                             #Update sel
                             sel_loss.backward()
                             self.optimizer_pred.zero_grad()
                             self.optimizer_dis.zero_grad()
+                            self.optimizer_base.zero_grad()
                             self.optimizer_sel.step()
                                     
                     # statistics
                     running_sel_loss += sel_loss.item() * inputs.size(0)
                     running_pred_loss += pred_ce_loss.item() * inputs.size(0)
                     running_dis_loss += dis_ce_loss.item() * inputs.size(0)
+                    running_base_loss += base_ce_loss.item() * inputs.size(0)
                     running_spa += l1_loss.item() *inputs.size(0)
-                    
-                    #running_pred_auc += get_auc_roc(pred_prob.detach().cpu().numpy(),labels.data)
-                    running_iou += get_IoU(sel_prob,mask,self.device) * inputs.size(0)
+                
                     running_pred_acc += torch.sum(pred_preds == labels.data)
                     running_dis_acc += torch.sum(dis_preds == (1-labels.data))
-                    #print(running_pred_acc,running_dis_acc,running_iou)
-
+                    running_base_acc += torch.sum(base_preds == labels.data)
+                    
                     pbar.update(inputs.shape[0])
                 pbar.close()
 
-
+                epoch_base_loss = running_base_loss / self.dataset_sizes[phase]
                 epoch_sel_loss = running_sel_loss / self.dataset_sizes[phase]
                 epoch_pred_loss = running_pred_loss / self.dataset_sizes[phase]
                 epoch_dis_loss = running_dis_loss / self.dataset_sizes[phase]
                 epoch_spa = running_spa / self.dataset_sizes[phase]
                 
-                #epoch_pred_auc = 1.0*running_pred_auc / self.dataset_sizes[phase]
-                epoch_IoU = running_iou.double() / self.dataset_sizes[phase]
+                epoch_base_acc = running_base_acc.double()/ self.dataset_sizes[phase]
                 epoch_pred_acc = running_pred_acc.double() / self.dataset_sizes[phase]
                 epoch_dis_acc = running_dis_acc.double() / self.dataset_sizes[phase]
 
-                print('{} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} Spa: {:.4f} PAC: {:.4f} DAC: {:.4f} IoU: {:.4f}'.format(
-                    phase, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_spa, epoch_pred_acc, epoch_dis_acc,  epoch_IoU))
+                print('{} Base_Loss: {:.4f} Sel_Loss: {:.4f} Pred_Loss: {:.4f} Dis_Loss: {:.4f} Spa: {:.4f} BAC: {:.4f} PAC: {:.4f} DAC: {:.4f}'.format(
+                    phase, epoch_base_loss, epoch_sel_loss, epoch_pred_loss, epoch_dis_loss, epoch_spa, epoch_base_acc, epoch_pred_acc, epoch_dis_acc))
 
                 # deep copy the model
-                if phase == 'valid' and epoch_IoU > best_epoch_iou:
-                    best_epoch_iou = epoch_IoU
+                if phase == 'valid' and epoch_sel_loss < best_sel_loss:
+                    
+                    best_sel_loss = epoch_sel_loss
                     torch.save(self.selector.state_dict(),self.exp_name+'_sel.pt')
+                    torch.save(self.baseline.state_dict(),self.exp_name+'_base.pt')
                     torch.save(self.predictor.state_dict(),self.exp_name+'_pred.pt')
                     torch.save(self.discriminator.state_dict(),self.exp_name+'_dis.pt')
                     #import pdb;pdb.set_trace()
@@ -590,67 +543,12 @@ class dc_invase():
             time_elapsed // 60, time_elapsed % 60))
         print('Best Sel Loss: {:4f}'.format(best_sel_loss))
 
+        torch.save(self.baseline.state_dict(),self.exp_name+'_base_final.pt')
         torch.save(self.selector.state_dict(),self.exp_name+'_sel_final.pt')
         torch.save(self.predictor.state_dict(),self.exp_name+'_pred_final.pt')
         torch.save(self.discriminator.state_dict(),self.exp_name+'_dis_final.pt')
 
         print('Training completed finally !!!!!')
-        
-    def get_output(self,input_data):
-        
-        return self.selector(input_data).numpy()
-        
-    def test_model(self):
-                
-        self.selector.load_state_dict(torch.load(self.exp_name+'_sel.pt'))
-        self.selector.eval()
-        
-        mIoU = 0
-        total = 0
-        mode = 'test'
-
-        with torch.no_grad():
-            for data in self.dataloaders[mode]:
-
-                images = data['image']
-                mask = data['mask']
-
-                images = images.to(self.device)
-                
-                sel_prob = make_prob(self.selector(images))
-                iou = get_IoU(sel_prob,mask)
-                
-                total += labels.size(0)
-                mIoU += iou
-
-        print("mIoU:", 1.0*mIoU/total)
-        
-    def test_model_acc(self):
-                
-        self.predictor.load_state_dict(torch.load(self.exp_name+'_pred.pt'))
-        self.predictor.eval()
-        
-        acc = 0
-        total = 0
-        mode = 'test'
-
-        with torch.no_grad():
-            for data in self.dataloaders[mode]:
-
-                images = data['image']
-                labels = data['category']
-                
-                images = images.to(self.device)
-                labels = labels.to(self.device)
-                
-                output = self.predictor(images)
-                _,out = torch.max(output,1)
-                
-                total += labels.size(0)
-                acc += torch.sum(out==labels.data)
-
-        print("mIoU:", 1.0*acc.double()/total)
-        
         
     def get_cam(self):
                 
@@ -677,57 +575,35 @@ class dc_invase():
 
                 inputs = data['image']
                 labels = data['category']
-                mask = denorm_img(data['mask'],self.img_mean,self.img_std)
-                bmask = torch.Tensor(denorm_img(data['bmask'],self.img_mean,self.img_std)).to(self.device)
-                
+
                 inputs = inputs.to(self.device)
                 labels = labels.to(self.device) 
-
-                #Get the CAM which will the prob map
-#                 cam = torch.matmul(weight_softmax[out[0]],feat[0].reshape(feat[0].shape[0],feat[0].shape[1]*feat[0].shape[2]))
-#                 cam = F.relu(cam.reshape(feat[0].shape[1], feat[0].shape[2]))
-#                 cam_img = F.interpolate(cam.unsqueeze(dim=0).unsqueeze(dim=0),(self.input_shape[0],self.input_shape[1]),mode='bilinear')             
-#                 cam_img = cam_img - cam_img.min()
-#                 cam_img = cam_img/cam_img.max()
-
-                sel_prob = F.sigmoid(self.selector(inputs))                        
-                #sel_prob = sel_prob*bmask
-
                 
-                sel_bin = torch.zeros(sel_prob.shape).to(self.device)
-                sel_bin[sel_prob>0] = 1
-                #cam_bin[cam_img<0] = 0
-                
-                iou += get_IoU(sel_bin,mask,self.device)
-                #import pdb;pdb.set_trace()
-                #print(iou)
-                
-                m.append(mask.squeeze())
-                bm.append(bmask.squeeze())
-                cm.append(sel_prob.cpu().numpy().squeeze())
-                                
-                base_path = '../Experiments/CAM/'
-                name = data['name'][0]
-                
-                
-#                 im = name.replace('.j','_1.j')
-#                 inputs = inputs/inputs.max()
-#                 cv2.imwrite(base_path+im,inputs.cpu().numpy().squeeze().transpose((1,2,0))*255)
-                
-#                 ma = name.replace('.j','_2.j')
-#                 cv2.imwrite(base_path+ma,mask.squeeze()*255)
-
-                pr = name.replace('.j','_4_DCI_Unet_Sig.j')
+                sel_prob = self.selector(inputs)
+                sel_prob = sel_prob - sel_prob.min()
                 sel_prob = sel_prob/sel_prob.max()
-                cv2.imwrite(base_path+pr,sel_prob.cpu().numpy().squeeze()*255)
+
+                bin_samples = test_samples(sel_prob.data)
+                bin_samples = torch.Tensor(bin_samples).to(self.device)
+                bin_mask = self.prob_mask(bin_samples).to(self.device) 
+
+                base_path = '../Experiments/Sanity_Check/'
+                name = data['name'][0]
+
+                #heatmap = cv2.applyColorMap(np.uint8(255*bin_mask.cpu().numpy().squeeze()), cv2.COLORMAP_JET)
+                heatmap = bin_mask.cpu().numpy().squeeze()
+                heatmap = np.expand_dims(heatmap,axis=2)
+                #heatmap = np.float32(heatmap) / 255
+                cam_f = heatmap*np.float32(inputs.cpu().numpy().squeeze().transpose((1,2,0)))
+                cam_f = cam_f / np.max(cam_f)
+                #cam_f = heatmap
+                pr = name.replace('.j','_bin_16x16_wo_sof.j')
+                cv2.imwrite(base_path+pr,cam_f*255)
+
                 
                 pbar.update(inputs.shape[0])
                 
             pbar.close()
-
-        print('mIoU:',iou.double()/self.dataset_sizes[mode])
-
-        return m,bm,cm
         
 
     def return_model(self):
