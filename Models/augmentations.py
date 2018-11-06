@@ -19,7 +19,7 @@ class Compose(object):
             img = Image.fromarray(img, mode="RGB")
             mask = Image.fromarray(mask, mode="L")
             self.PIL2Numpy = True
-
+            
         #assert img.size == mask.size
         for a in self.augmentations:
             img, mask = a(img, mask)
